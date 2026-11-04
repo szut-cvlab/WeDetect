@@ -20,12 +20,21 @@ ds_collections = {
         'ann_path': 'data/PACO/paco_lvis_v1_test.json',
         'image_path': 'data/coco/',
     },
+    'visdrone': {
+        'ann_path': 'data/VisDrone/annotations/visdrone_testdev_coco.json',
+        'image_path': 'data/VisDrone/images/',
+    },
 }
 
 
 
-def fast_eval_recall(dataset, proposals):
+def fast_eval_recall(dataset, proposals, proposal_nums=(100, 300, 500)):
     """Evaluate proposal recall with COCO's fast_eval_recall.
+
+    AR@k 是类无关（class-agnostic）候选召回率，不看类别只看框：
+    每张图取分数最高的前 k 个候选，若某 GT 与任一候选 IoU >= t 则记为召回；
+    t 遍历 0.5:0.05:0.95 共 10 档，先对该图全部 GT × 10 档取平均，再对全数据集取平均。
+    三行输出分别对应 k=100/300/500，即"只给下游 k 个候选时能盖住多少 GT"。
 
     Args:
         results (List[dict]): Results of the dataset.
@@ -41,8 +50,8 @@ def fast_eval_recall(dataset, proposals):
     iou_thrs = np.linspace(
                 .5, 0.95, int(np.round((0.95 - .5) / .05)) + 1, endpoint=True)
     
-    if dataset == 'coco':
-        coco = COCO(ds_collections['coco']['ann_path'])
+    if dataset in ('coco', 'visdrone'):
+        coco = COCO(ds_collections[dataset]['ann_path'])
         gt_bboxes = []
         pred_bboxes = []
         for proposal in proposals:
@@ -65,9 +74,9 @@ def fast_eval_recall(dataset, proposals):
                 bboxes = np.zeros((0, 4))
             gt_bboxes.append(bboxes)
 
-        recalls = eval_recalls(gt_bboxes, pred_bboxes, [100, 300], iou_thrs)
-        print(sum(recalls[0]) / len(recalls[0]))
-        print(sum(recalls[1]) / len(recalls[1]))
+        recalls = eval_recalls(gt_bboxes, pred_bboxes, list(proposal_nums), iou_thrs)
+        for n, r in zip(proposal_nums, recalls):
+            print(f"AR@{n}: {r.mean():.4f}")
 
     elif dataset == 'lvis':
         lvis = LVIS(ds_collections['lvis']['ann_path'])
@@ -105,9 +114,9 @@ def fast_eval_recall(dataset, proposals):
             gt_bboxes.append(bboxes)
 
         # 评估 recall
-        recalls = eval_recalls(gt_bboxes, pred_bboxes, [100, 300], iou_thrs)
-        print(sum(recalls[0]) / len(recalls[0]))
-        print(sum(recalls[1]) / len(recalls[1]))
+        recalls = eval_recalls(gt_bboxes, pred_bboxes, list(proposal_nums), iou_thrs)
+        for n, r in zip(proposal_nums, recalls):
+            print(f"AR@{n}: {r.mean():.4f}")
 
     if dataset == 'paco':
         lvis = LVIS(ds_collections['paco']['ann_path'])
@@ -145,9 +154,9 @@ def fast_eval_recall(dataset, proposals):
             gt_bboxes.append(bboxes)
 
         # 评估 recall
-        recalls = eval_recalls(gt_bboxes, pred_bboxes, [100, 300], iou_thrs)
-        print(sum(recalls[0]) / len(recalls[0]))
-        print(sum(recalls[1]) / len(recalls[1]))
+        recalls = eval_recalls(gt_bboxes, pred_bboxes, list(proposal_nums), iou_thrs)
+        for n, r in zip(proposal_nums, recalls):
+            print(f"AR@{n}: {r.mean():.4f}")
 
 
 import os
@@ -1263,6 +1272,7 @@ class SimpleYOLOWorldDetector(nn.Module):
                     (num_prompts, prompt_dim)), dim=-1)
         self.embeddings = nn.Parameter(embeddings)
         self.prior_generator = MlvlPointGenerator(strides=[8, 16, 32], offset=0.5)
+        self.max_det = 300
 
 
     def forward(self, image_paths: List[str], rescale=True):
@@ -1331,17 +1341,6 @@ class SimpleYOLOWorldDetector(nn.Module):
     
 
     def head_predict(self, img_feats):
-        scales = torch.cat([
-            torch.full([self.grid_size[0]], self.bbox_head.cls_contrasts[0].logit_scale.data, device=img_feats[0].device),
-            torch.full([self.grid_size[1]], self.bbox_head.cls_contrasts[1].logit_scale.data, device=img_feats[0].device),
-            torch.full([self.grid_size[2]], self.bbox_head.cls_contrasts[2].logit_scale.data, device=img_feats[0].device),
-        ])
-        bias = torch.cat([
-            torch.full([self.grid_size[0]], self.bbox_head.cls_contrasts[0].bias.data, device=img_feats[0].device),
-            torch.full([self.grid_size[1]], self.bbox_head.cls_contrasts[1].bias.data, device=img_feats[0].device),
-            torch.full([self.grid_size[2]], self.bbox_head.cls_contrasts[2].bias.data, device=img_feats[0].device),
-        ])
-
         bbox_embed, bbox_preds, cls_scores = [], [], []
         for i in range(len(img_feats)):
             box_embed, bbox_pred, cls_score = self.head_module_forward_single(
@@ -1353,7 +1352,12 @@ class SimpleYOLOWorldDetector(nn.Module):
             bbox_embed.append(box_embed)
             bbox_preds.append(bbox_pred)
             cls_scores.append(cls_score)
-        
+
+        # scales/bias 长度 = 各层网格数，随输入尺寸自适应；值取自各层 cls_contrasts
+        grid_lens = [bbox_pred.shape[2] * bbox_pred.shape[3] for bbox_pred in bbox_preds]
+        scale_vals = [contrast.logit_scale.data for contrast in self.bbox_head.cls_contrasts]
+        bias_vals = [contrast.bias.data for contrast in self.bbox_head.cls_contrasts]
+
         # objectness = None, with_objectness=False, multi_label=False
         txt_channel = bbox_embed[0].shape[1]
         num_imgs = bbox_embed[0].shape[0]
@@ -1390,15 +1394,18 @@ class SimpleYOLOWorldDetector(nn.Module):
         for bbox, embed,scores in zip(
             flatten_decoded_bbox, flatten_bbox_embed,flatten_cls_scores
         ):
+            # 每图新建 scales/bias：不能在图间共享，否则上一图切片后长度变短导致下一图索引越界
+            scales = torch.cat([torch.full([n], v, device=scores.device) for n, v in zip(grid_lens, scale_vals)])
+            bias = torch.cat([torch.full([n], v, device=scores.device) for n, v in zip(grid_lens, bias_vals)])
             scores, labels, keep_idxs, _ = filter_scores_and_topk(
                 scores, 0.0, 30000)
 
-            
+
             bbox = bbox[keep_idxs]
             embed = embed[keep_idxs]
             scales = scales[keep_idxs]
             bias = bias[keep_idxs]
-            idx = torchvision.ops.batched_nms(bbox.float(), scores.float(), labels, 0.7)[:300]
+            idx = torchvision.ops.batched_nms(bbox.float(), scores.float(), labels, 0.7)[:self.max_det]
             bbox = bbox[idx]
             embed = embed[idx]
             labels = labels[idx]
@@ -1425,7 +1432,7 @@ class ImageDataset(torch.utils.data.Dataset):
         self.dataset = dataset
         self.images = []
 
-        if dataset == 'coco' or dataset == 'paco':
+        if dataset in ('coco', 'paco', 'visdrone'):
             images = json.load(open(ds_collections[dataset]['ann_path']))['images']
             for ann in images:
                 item = {
@@ -1496,6 +1503,9 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--num-workers', type=int, default=1)
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--out_pred', type=str, default='')
+    parser.add_argument('--max_det', type=int, default=300)
+    parser.add_argument('--input-size', type=int, default=0, help='0=用模型默认（base 640 / large 1280）')
     args = parser.parse_args()
 
     torch.distributed.init_process_group(
@@ -1537,6 +1547,9 @@ if __name__ == '__main__':
     print(msg)
     model = model.cuda()
     model.eval()
+    model.max_det = args.max_det
+    if args.input_size > 0:
+        model.img_size = (args.input_size, args.input_size)
 
 
     random.seed(args.seed)
@@ -1555,13 +1568,12 @@ if __name__ == '__main__':
     all_boxes = []
     with torch.no_grad():
         for inputs in tqdm(dataloader, disable=torch.distributed.get_rank() != 0):
-            image_ids.append(inputs[0]['id'])
+            image_ids += [inp['id'] for inp in inputs]
 
-            images = [inputs[0]['image']]
+            images = [inp['image'] for inp in inputs]
             outputs = model(images)
-            boxes = outputs[0]['bboxes']
-            
-            all_boxes.append(boxes.cpu())
+            for out in outputs:
+                all_boxes.append(out['bboxes'].cpu())
 
     torch.distributed.barrier()
 
@@ -1584,6 +1596,8 @@ if __name__ == '__main__':
                 'boxes': boxes,
             })
         # torch.save(results, f"{args.dataset}_{args.model}.pth")
+        if args.out_pred:
+            torch.save(results, args.out_pred)
         fast_eval_recall(args.dataset, results)
     torch.distributed.barrier()
 
