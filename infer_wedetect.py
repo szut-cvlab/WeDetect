@@ -74,7 +74,7 @@ def parse_args():
                         type=float,
                         help='confidence score threshold for predictions.')
     parser.add_argument('--device',
-                        default='cuda:1',
+                        default='cuda:0',
                         help='device used for inference.')
     parser.add_argument('--show',
                         action='store_true',

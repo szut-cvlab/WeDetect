@@ -175,7 +175,7 @@ test_pipeline = [
 coco_train_dataset = dict(type='YOLOv5CocoDataset',
                           metainfo=dict(classes=['object']), # class-agnostic setting
                           data_root='data/coco/',
-                          ann_file='data/coco/annotations/coco_instances_objectness.json',
+                          ann_file='annotations/coco_instances_objectness.json',
                           data_prefix=dict(img='train2017/'),
                           filter_cfg=dict(filter_empty_gt=False, min_size=32),
                           pipeline=train_pipeline)
@@ -194,7 +194,7 @@ coco_val_dataset = dict(
     _delete_=True,
     type='YOLOv5CocoDataset',
     data_root='data/coco/',
-    ann_file='data/coco/annotations/instances_val2017.json',
+    ann_file='annotations/instances_val2017.json',
     data_prefix=dict(img='val2017/'),
     filter_cfg=dict(filter_empty_gt=False, min_size=32),
     pipeline=test_pipeline

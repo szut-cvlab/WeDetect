@@ -1,0 +1,39 @@
+# WeDetect 本地环境清单（上游仓库没有此文件，保持 untracked，别提交）
+# 用法：
+#   export CUDA_HOME=/usr/local/cuda-12.2 && export PATH=$CUDA_HOME/bin:$PATH  # mmcv 源码构建需要 nvcc
+#   uv sync
+# 注意：uv sync 是"对齐"语义，清单外的包会被删掉；临时装实验包别指望 sync 保留。
+[project]
+name = "wedetect-env"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    # torch 2.5.1 的 PyPI 默认 Linux 轮子即 cu124（与 README pytorch==2.5.1+cu124 一致）；钉死防顶升
+    "torch==2.5.1",
+    "torchvision==0.20.1",
+    "transformers==4.57.1",
+    "trl==0.17.0",
+    "accelerate==1.10.0",
+    "timm",   # mm_backbone.py:20 用 timm.models.layers（README 依赖清单漏了它）
+    # mmcv 的 setup.py import pkg_resources：必须 <81（81 起移除）；>=70 适配 py3.12
+    "setuptools>=70,<81",
+    "wheel",
+    # mmdet 纯 Python；自动带入 mmengine，且约束 mmcv<2.2.0
+    "mmdet==3.3.0",
+    # mmcv 无 cu124/torch2.5 预编译轮子，源码构建，见下方 no-build-isolation-package
+    "mmcv==2.1.0",
+    "pycocotools",
+    "terminaltables",
+    "jsonlines",
+    "tabulate",
+    "lvis",
+    "supervision==0.19.0",
+    "webdataset",
+    "ddd-dataset",
+    "albumentations",
+]
+
+[tool.uv]
+# mmcv 源码构建必须用 venv 里的 setuptools 79（有 pkg_resources），
+# 关闭构建隔离，否则隔离环境里的最新 setuptools 让 setup.py 一启动就 ModuleNotFoundError
+no-build-isolation-package = ["mmcv"]

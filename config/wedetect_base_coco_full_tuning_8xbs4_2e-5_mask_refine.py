@@ -141,7 +141,7 @@ coco_train_dataset = dict(
     dataset=dict(
         type='WeCocoDataset',
         data_root='data/coco/',
-        ann_file='data/coco/annotations/instances_train2017.json',
+        ann_file='annotations/instances_train2017.json',
         data_prefix=dict(img='train2017/'),
         filter_cfg=dict(filter_empty_gt=False, min_size=32)),
     class_text_path='data/texts/coco_zh_class_texts.json',
