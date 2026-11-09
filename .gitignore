@@ -8,3 +8,5 @@ eval_refcoco/
 data/*
 !data/texts/
 work_dirs/
+.env
+www.bilibili.com_cookies.txt

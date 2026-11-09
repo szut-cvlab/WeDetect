@@ -31,6 +31,9 @@ dependencies = [
     "webdataset",
     "ddd-dataset",
     "albumentations",
+    # data_prep 下的抓取/判图脚本直接用
+    "python-dotenv",
+    "tqdm",
 ]
 
 [tool.uv]

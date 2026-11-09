@@ -75,7 +75,6 @@ BaiduPCS-Go download /apps/bypy/train.zip -save /mnt/sda1/datasets/drone -p 20
 | CODrone | https://github.com/AHideoKuzeA/CODrone-A-Comprehensive-Oriented-Object-Detection-benchmark-for-UAV ，镜像 https://hf-mirror.com/datasets/huseyincavus/codrone （`codrone.zip` 7.25 GB） |
 | ATR-UMOD | https://github.com/supercpy/ATR-UMOD （README 给百度网盘链接与提取码） |
 
-
 入池五个数据集的产物全在 `data/coco_anno/`（软链到 `/mnt/sda1/datasets/drone/coco`），`data_root=/mnt/sda1/datasets/drone`：
 
 | 数据集 | 入池 json | 类数 | 图 / 框（切块后） | 转换脚本 |
@@ -202,3 +201,25 @@ datasetninja 重打包版，RGB 与红外成对，只用 RGB 半边。XML 标注
 
 **不去重**：相邻编号帧的并集比中位 1.71、A→B 框匹配率 0.00——重打包时文件名被重新编号，相邻编号不是同一场景的相邻帧。
 
+### 2.2 COD 训练
+
+#### 2.2.0 图源与管线
+
+COD 图源只有一批：**SkyFind 剔四域 + 同帧去重后的 15,432 张**，清单 `SkyFind/cod.json`（`{root, images, stats, 阈值}`），下游只读它。FOD 五集 1.97M 实例不动。按源统计、划分实测、下载解压与去重细节见 [2026-11-08-uav-skyfind.md](2026-11-08-uav-skyfind.md)。
+
+| | 图数 | 说明 |
+| --- | ---: | --- |
+| SkyFind 全量 | 35,599 | 解压到 `SkyFind/train/` + `SkyFind/test/` |
+| − VisDrone | 4,688 | FOD 重复 + 可能含 test-dev 帧，考卷一泄漏险 |
+| − DroneVehicle | 4,829 | FOD 重复 |
+| − SeaDronesSee / MOBDrone | 4,736 | 考卷二整集留出，已移到 `SkyFind/test/` |
+| 剩（21,346）| 21,346 | 自爬 8,216 + UVSD 3,950 + AU-AIR 2,280 + UAVDT 1,934 + Okutama 1,521 + CARPK 1,221 + Stanford 1,170 + 分割四域 1,054 |
+| **− 同帧去重** | −5,914 | dHash 汉明 ≤6，按源内部、簇内取最清晰那张（`data_prep/skyfind_dedup.py`） |
+| **进 COD** | **15,432** | 清单 `SkyFind/cod.json` |
+
+标注全由我们自己的管线产出：Uni 全召回（wedetect_uni，16px 以下切片推理）→ VLM `coarse/mid/fine` 三段命名 → 置信度分层（高分直收、低分人审、16px 以下全人工）。进管线前对 FOD 池跑 pHash 兜底。
+
+#### 2.2.1 产出（待跑）
+
+- 预估框量待 Uni 实测；按穷尽标注口径约 30–60 万框（15,432 图 × 20–40 目标），不是 SkyFind 自报的每图 ~10
+- 产出标注属 SkyFind 衍生物（cc-by-nc-nd-4.0），只自用训练，不进发布包
