@@ -77,18 +77,18 @@ BaiduPCS-Go download /apps/bypy/train.zip -save /mnt/sda1/datasets/drone -p 20
 
 入池五个数据集的产物全在 `data/coco_anno/`（软链到 `/mnt/sda1/datasets/drone/coco`），`data_root=/mnt/sda1/datasets/drone`：
 
-| 数据集 | 入池 json | 类数 | 图 / 框（切块后） | 转换脚本 |
+| 数据集 | 入池 json | 类数 | 图 / 框 | 转换脚本 |
 | --- | --- | --- | --- | --- |
 | VisDrone | `visdrone_trainval.json` | 10 | 7,019 / 381,963 | `visdrone2coco.py` |
 | DroneVehicle | `dronevehicle.json` | 5 | 27,654 / 452,568 | `dronevehicle2coco.py` |
-| HazyDet | `hazydet_tiles.json` | 3 | 27,399 / 445,247 | `hazydet2coco.py` → `slice_coco.py` |
-| CODrone | `codrone_tiles.json` | 12 | 43,440 / 532,613 | `codrone2coco.py` → `slice_coco.py` |
+| HazyDet | `hazydet.json` | 3 | 11,543 / 380,128 | `hazydet2coco.py` |
+| CODrone | `codrone.json` | 12 | 10,004 / 443,583 | `codrone2coco.py` |
 | ATR-UMOD | `atrumod.json` | 11 | 13,245 / 161,787 | `atrumod2coco.py` |
-| **合计** | 5 份，258 MB | 21 | **118,757 / 1,974,178** | — |
+| **合计** | 5 份 | 21 | **69,465 / 1,820,029** | — |
 
-合计的 **1,974,178 是训练实例数**（dataloader 真正看到的条数；CODrone 与 HazyDet 重叠带里同一目标写两份都算），对外发布与数据集命名都用它。另两个口径：源图（切块前）69,465 张，实例去重后 1,820,029 个框。类数相加 41、合并去重 21。
+**1,820,029 是训练实例数**（五集入池标注 annotations 总数，dataloader 真正看到的条数），对外发布与数据集命名都用它。全图入池，切块只在方法侧训练与推理时按需进行，tile 不落盘。类数相加 41、合并去重 21。
 
-命名：`{dataset}.json` 是未切块标注（不切块的集它就是入池标注），`{dataset}_tiles.json` 是切块后入池标注，`{dataset}_class_texts.json` 是类名表。`hazydet.json`、`codrone.json` 只是切块输入，不进训练。
+命名：`{dataset}.json` 是入池标注，`{dataset}_class_texts.json` 是类名表。`*_tiles.json` 与 `slice_coco.py` 不再用于入池。
 
 **格式与路径**：只吃标准 COCO（`WeCocoDataset`→`YOLOv5CocoDataset`→`mmdet.CocoDataset`），框一律 `[x, y, w, h]`；`file_name` 相对 `/mnt/sda1/datasets/drone` 且带集名前缀，全池共用一个 `data_root`。
 
@@ -108,7 +108,7 @@ BaiduPCS-Go download /apps/bypy/train.zip -save /mnt/sda1/datasets/drone -p 20
 | 原始形态 | 数据集 | 转换 |
 | --- | --- | --- |
 | 水平框 | VisDrone、DroneVehicle、HazyDet | 坐标直映射 |
-| 旋转框 | CODrone、ATR-UMOD | 四顶点 min/max 取外接矩形，再切块 |
+| 旋转框 | CODrone、ATR-UMOD | 四顶点 min/max 取外接矩形 |
 | 自由文本 | COD 管线 | 取 `fine`（缺则 `mid`）当类名，三段另存 |
 
 **校验**：框数守恒、坐标不越界、每集抽 20 张画框核对、`file_name 校验 missing=0`。
@@ -128,7 +128,7 @@ train+val 全进池，合成一个 COCO JSON。
 | 逐类框数 | car 158,930、pedestrian 88,181、motor 34,533、people 32,184、van 26,931、truck 13,625、bicycle 11,767、bus 6,177、tricycle 5,857、awning tricycle 3,778 |
 | 截断 / 遮挡 | 截断 14,845（3.9%）；遮挡 无 184,113 / 部分 161,112 / 严重 36,738（9.6%） |
 | 目标边长 | <8px 39,511（10.3%）、8–16 103,475（27.1%）、16–32 128,931（33.8%）、32–64 77,352（20.3%）、≥64 32,694（8.6%） |
-| 分辨率 | 长边最大 2000，≤2560 不切块；前六档 1400×1050（2,498）、1400×788（1,299）、1360×765（1,151）、2000×1500（772）、1916×1078（537）、960×540（371） |
+| 分辨率 | 长边最大 2000；前六档 1400×1050（2,498）、1400×788（1,299）、1360×765（1,151）、2000×1500（772）、1916×1078（537）、960×540（371） |
 
 表内按原图像素统计。
 
@@ -151,7 +151,7 @@ datasetninja 重打包版，RGB 与红外成对，只用 RGB 半边。XML 标注
 
 `{train,val,test}/{hazy_images,images}` 加 `*_coco.json`，另有 `real_world/{train,test}` 加 `*_real.json`。COCO 标注的是雾图，同名清晰图复用同一批框。
 
-选图（源口径，未切块）：
+选图：
 
 | 类别 | 图数 | 框数 | 处理 |
 | --- | --- | --- | --- |
@@ -160,31 +160,15 @@ datasetninja 重打包版，RGB 与红外成对，只用 RGB 半边。XML 标注
 | 真实雾 | 600 | 19,296 | 收（与 RDDTS 同一批，MD5 全同） |
 | 合成雾，有同名清晰图 | 5,907 | 234,354 | 不收，同一批实例的第二个域 |
 
-合计源图 11,543 张 / 380,128 框（候选 11,600，剔除同帧双标注 55 张、清洗后变空 2 张）。**不去重**：并集比值中位 1.48，可安全删的仅 0.4%。
+合计 11,543 张 / 380,128 框（候选 11,600，剔除同帧双标注 55 张、清洗后变空 2 张）。**不去重**：并集比值中位 1.48，可安全删的仅 0.4%。
 
-切块后（入池口径）：
-
-| 项目 | 统计 |
-| --- | --- |
-| 图 / 框 | **27,399 / 445,247** |
-| 逐类 | car 408,950、truck 16,733、bus 19,564 |
-| 占盘 | 6.3 GB |
-
-边长分布（源框口径）：<8px 2.3%、8–16 11.3%、16–32 23.9%、32–64 37.4%、≥64 25.1%。
+边长分布：<8px 2.3%、8–16 11.3%、16–32 23.9%、32–64 37.4%、≥64 25.1%。
 
 #### 2.1.4 CODrone
 
 10,004 张全部 3840×2160，`annfile` 是 DOTA 风格 txt（八点 OBB + 类别），`labels/` 是同内容 XML，不用。
 
-源图 10,004 张 / 443,583 框、12 类，边长 <8px 0.7% / 8–16 8.2% / 16–32 26.9% / 32–64 33.9% / ≥64 30.5%。
-
-切块后（入池口径）：
-
-| 项目 | 统计 |
-| --- | --- |
-| 图 / 框 | **43,440 / 532,613** |
-| 逐类 | car 272,361、people 96,402、motor 89,261、truck 29,108、traffic sign 13,733、traffic light 8,184、boat 8,627、bus 5,750、bicycle 4,707、tricycle 3,480、ship 522、bridge 478 |
-| 占盘 | 14 GB |
+10,004 张 / 443,583 框、12 类，边长 <8px 0.7% / 8–16 8.2% / 16–32 26.9% / 32–64 33.9% / ≥64 30.5%。
 
 场景：50 个，昼 6,097 / 夜 3,714，高度 30/60/100 m，视角 30°/90° 各半。
 
@@ -197,7 +181,7 @@ datasetninja 重打包版，RGB 与红外成对，只用 RGB 半边。XML 标注
 | 图 / 框 | **13,245 / 161,787**（13,353 图中 108 个空标注跳过、12 个退化框丢弃） |
 | 逐类 | car 69,340、SUV 36,481、van 18,151、bus 9,797、freight car 9,746、truck 8,553、motor 3,631、tank truck 1,879、trailer 1,870、excavator 1,287、crane 1,052 |
 | 目标边长 | <8px 4.8%、8–16 28.9%、16–32 48.9%、32–64 15.2%、≥64 2.1% |
-| 分辨率 | 640×512，≤2560 不切块 |
+| 分辨率 | 640×512 |
 
 **不去重**：相邻编号帧的并集比中位 1.71、A→B 框匹配率 0.00——重打包时文件名被重新编号，相邻编号不是同一场景的相邻帧。
 
@@ -205,7 +189,7 @@ datasetninja 重打包版，RGB 与红外成对，只用 RGB 半边。XML 标注
 
 #### 2.2.0 图源与管线
 
-COD 图源只有一批：**SkyFind 剔四域 + 同帧去重后的 15,432 张**，清单 `SkyFind/cod.json`（`{root, images, stats, 阈值}`），下游只读它。FOD 五集 1.97M 实例不动。按源统计、划分实测、下载解压与去重细节见 [2026-11-08-uav-skyfind.md](2026-11-08-uav-skyfind.md)。
+COD 图源只有一批：**SkyFind 剔四域 + 同帧去重后的 15,432 张**，清单 `SkyFind/cod.json`（`{root, images, stats, 阈值}`），下游只读它。FOD 五集 1.82M 框不动。按源统计、划分实测、下载解压与去重细节见 [2026-11-08-uav-skyfind.md](2026-11-08-uav-skyfind.md)。
 
 | | 图数 | 说明 |
 | --- | ---: | --- |
@@ -217,9 +201,16 @@ COD 图源只有一批：**SkyFind 剔四域 + 同帧去重后的 15,432 张**�
 | **− 同帧去重** | −5,914 | dHash 汉明 ≤6，按源内部、簇内取最清晰那张（`data_prep/skyfind_dedup.py`） |
 | **进 COD** | **15,432** | 清单 `SkyFind/cod.json` |
 
-标注全由我们自己的管线产出：Uni 全召回（wedetect_uni，16px 以下切片推理）→ VLM `coarse/mid/fine` 三段命名 → 置信度分层（高分直收、低分人审、16px 以下全人工）。进管线前对 FOD 池跑 pHash 兜底。
+标注全由我们自己的管线产出，流程见 §2.2.1。进管线前对 FOD 池跑 pHash 兜底。
 
 #### 2.2.1 产出（待跑）
+
+流程（仿 WeDetect 数据引擎，标注器用裸 Qwen3-VL prompting，）：
+
+1. Uni 全召回：推理时内存切片（长边 >1280 切 1280×1280，Uni Large 输入 1280），框映射回原图坐标，输出框 + 置信度 + box embedding
+2. SAM 框提质：仅对 ≥16px 框 box-prompt 出 mask，`mask2bbox` 修正框；16px 以下不用 SAM；mask 质量差（面积与框严重不符）
+3. VLM 按框坐标命名：Qwen3-VL 输入原图（4K 在预算内）加修正后的框坐标，输出 `coarse/mid/fine` 三段；框不对即拒识丢框，prompt 里写死
+4. 置信度分层：高分直收、低分人审、16px 以下全人工
 
 - 预估框量待 Uni 实测；按穷尽标注口径约 30–60 万框（15,432 图 × 20–40 目标），不是 SkyFind 自报的每图 ~10
 - 产出标注属 SkyFind 衍生物（cc-by-nc-nd-4.0），只自用训练，不进发布包
