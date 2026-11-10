@@ -88,7 +88,18 @@ BaiduPCS-Go download /apps/bypy/train.zip -save /mnt/sda1/datasets/drone -p 20
 
 **1,820,029 是训练实例数**（五集入池标注 annotations 总数，dataloader 真正看到的条数），对外发布与数据集命名都用它。全图入池，切块只在方法侧训练与推理时按需进行，tile 不落盘。类数相加 41、合并去重 21。
 
-命名：`{dataset}.json` 是入池标注，`{dataset}_class_texts.json` 是类名表。`*_tiles.json` 与 `slice_coco.py` 不再用于入池。
+命名：`{dataset}.json` 是入池标注，`{dataset}_class_texts.json` 是类名表。
+
+**Uni objectness 微调按边切 1280**：任一边 >1600 的图切块（切边恒 1280 规则在 `slice_coco.py`）；mosaic 会把 >1280 子图缩到 1280，切块避免丢小目标。
+
+| 数据集 | 微调用 json | 图 / 框 | 处置 |
+| --- | --- | --- | --- |
+| VisDrone | `visdrone_trainval_tiles.json` | 8,679 / 436,904 | 1,667 张 >1600 切块（2000×1500 / 1920×1080 / 1916×1078）|
+| DroneVehicle | `dronevehicle.json` | 27,654 / 452,568 | 全 840×712，不切 |
+| HazyDet | `hazydet_tiles.json` | 30,169 / 480,690 | 2,866 张 1601–2560 带切块，其余原图登记 |
+| CODrone | `codrone_tiles.json` | 43,440 / 532,613 | 全 3840×2160 |
+| ATR-UMOD | `atrumod.json` | 13,245 / 161,787 | 全 640×512，不切 |
+| **合计** | 5 份 | **123,187 / 2,064,562** | — |
 
 **格式与路径**：只吃标准 COCO（`WeCocoDataset`→`YOLOv5CocoDataset`→`mmdet.CocoDataset`），框一律 `[x, y, w, h]`；`file_name` 相对 `/mnt/sda1/datasets/drone` 且带集名前缀，全池共用一个 `data_root`。
 
@@ -207,10 +218,41 @@ COD 图源只有一批：**SkyFind 剔四域 + 同帧去重后的 15,432 张**�
 
 流程（仿 WeDetect 数据引擎，标注器用裸 Qwen3-VL prompting，）：
 
-1. Uni 全召回：推理时内存切片（长边 >1280 切 1280×1280，Uni Large 输入 1280），框映射回原图坐标，输出框 + 置信度 + box embedding
-2. SAM 框提质：仅对 ≥16px 框 box-prompt 出 mask，`mask2bbox` 修正框；16px 以下不用 SAM；mask 质量差（面积与框严重不符）
+**1. Uni 全召回**
+
+Large-Uni 全量出 objectness 框。长边 >1280 内存切 1280×1280（模型输入 1280，tile 原生尺度推理），框映射回原图坐标；后处理：每 tile NMS 0.7 → top-500 截断 → 跨 tile 并集 → score>0.1 → NMS 0.7。输出 `SkyFind/cod_uni_boxes.jsonl`，每图一行 `{file, width, height, boxes: [[x,y,w,h,score],…]}`。断点续跑，双卡分片：
+
+```bash
+cd ~/projects/research/WeDetect
+CUDA_VISIBLE_DEVICES=2 SHARD=0 python data_prep/cod_uni_recall.py
+CUDA_VISIBLE_DEVICES=3 SHARD=1 python data_prep/cod_uni_recall.py
+```
+
+**2. SAM 3 框提质**
+
+权重走魔搭 `facebook/sam3`（HF gated 且大陆信息申请必拒，别走 HF）。transformers ≥4.58 自带 Sam3（box-prompt 走 `input_boxes`），不用 clone 官方仓库；主 venv 钉在 4.57.1 没有 Sam3，须独立环境。每图全部 ≥16px 框 box-prompt 一次出 mask（16px 以下不过 SAM，直接全人工）；mask 糊满 tile 或贴边的垃圾框直接丢，`mask2bbox` 反算紧框替换原框：
+
+```bash
+modelscope download --model facebook/sam3 --local_dir checkpoints/sam3
+# 独立环境：transformers 5（唯一带 Sam3 的版本，4.x 无）要求 torch ≥2.6，
+# 主 venv 的 torch 2.5.1 被 mmcv 编译 ABI 钉死不能升，只能单独带
+uv venv .venv-sam3 --python 3.12 && source .venv-sam3/bin/activate
+uv pip install "torch>=2.6" torchvision -i https://mirrors.aliyun.com/pypi/simple/
+uv pip install "transformers>=5"
+```
 3. VLM 按框坐标命名：Qwen3-VL 输入原图（4K 在预算内）加修正后的框坐标，输出 `coarse/mid/fine` 三段；框不对即拒识丢框，prompt 里写死
 4. 置信度分层：高分直收、低分人审、16px 以下全人工
 
-- 预估框量待 Uni 实测；按穷尽标注口径约 30–60 万框（15,432 图 × 20–40 目标），不是 SkyFind 自报的每图 ~10
-- 产出标注属 SkyFind 衍生物（cc-by-nc-nd-4.0），只自用训练，不进发布包
+##### Uni 召回实测与微调决策
+
+- 实测（微调前，`cod_uni_boxes.jsonl`）：153 万框，17.2% 为 >512px 大框（Semantic 源 37.6%）；大框打在建筑群/树冠/路面，与正常框分数分布几乎重合（中位 0.23 vs 0.25），阈值杀不掉
+- 根因：Uni objectness 是 COCO 域训的，没见过航拍视角，实例粒度错乱，属域适配缺口不是阈值问题
+- 决策：先用 FOD 微调 Uni 再重跑召回——69,465 图 / 182 万穷尽框类别并 0 当 objectness 训练集，解冻 head/neck（只用框不用 embedding，漂移无影响），配方 `wedetect_uni_base_finetune.py` 改 large + 1280；微调后大框比例复测，再决定是否加尺寸上限
+- 预估框量微调后实测；微调前实测 153 万不可用（按穷尽标注口径预期 30–60 万，15,432 图 × 20–40 目标）
+
+微调命令（数据 `coco/fod_objectness.json`，123,187 图 / 2,064,562 框，tile 版五集合并）：
+
+```bash
+# tmux 里跑（关终端不死）续训加 `--resume`。约 30,800 iter/epoch（总 batch 4）
+CUDA_VISIBLE_DEVICES=2,3 .venv/bin/torchrun --nproc_per_node=2 train.py config/wedetect_uni_large_finetune.py --launcher pytorch
+```

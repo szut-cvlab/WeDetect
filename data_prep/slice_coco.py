@@ -7,9 +7,10 @@
       coco/{dataset}_class_texts.json
 
 切法
-    长边 <= 2560：不切，原图直接登记。
-    长边 > 2560：块数 n = ceil(边长/1280)，步长 = (边长-1280)/(n-1)，
-    块尺寸恒 1280（某边 <= 1280 时取该边长度，不补黑边）。
+    每条边独立判断：边长 <= 1600 整边保留（进 mosaic 缩放 >=0.8，可接受）；
+    边长 > 1600 按 n = ceil(边长/1280)、步长 = (边长-1280)/(n-1) 均匀切。
+    块尺寸：切的边恒 1280，留的边取原边长（1281-1600，不补黑边）。
+    任一边 > 1600 的图切块落盘；两边都 <= 1600 的原图登记。
 
 归属
     目标中心落在块内就写该块，框裁到块边界；重叠带里几块各写一份。
@@ -25,7 +26,7 @@ from tqdm import tqdm
 from PIL import Image
 
 ROOT = "/mnt/sda1/datasets/drone"
-TILE, LONG_SIDE, MIN_SIDE = 1280, 2560, 4
+TILE, LONG_SIDE, MIN_SIDE = 1280, 1600, 4
 
 
 def slug(name):
@@ -33,20 +34,20 @@ def slug(name):
     return name.lower().replace("-", "").replace("_", "").replace(" ", "")
 
 
-def starts(length):
-    """块起点：先算块数，再算步长。"""
-    if length <= TILE:
-        return [0]
+def edge_blocks(length):
+    """一条边的 (起点, 尺寸) 列表：<=1600 整边一块，否则按 1280 均匀切。"""
+    if length <= LONG_SIDE:
+        return [(0, length)]
     n = math.ceil(length / TILE)
     step = (length - TILE) / (n - 1)
-    return [round(i * step) for i in range(n)]
+    return [(round(i * step), TILE) for i in range(n)]
 
 
 def work(task):
     """处理一张图，返回 (image 记录列表, 碎片数, 零目标块数)。"""
     src, rel, w, h, boxes, ignores, cut = task
 
-    if not cut:                                  # 长边 <= 2560，原图登记
+    if not cut:                                  # 两边都 <= 1600，原图登记
         if not boxes:
             return [], 0, 1
         return [(rel, w, h, boxes, ignores)], 0, 0
@@ -54,14 +55,9 @@ def work(task):
     img = Image.open(src)
     if img.size != (w, h):
         return [], 0, 1                          # 尺寸与标注不符，跳过
-    xs, ys = starts(w), starts(h)
-    tws = [min(TILE, w - x) for x in xs]
-    ths = [min(TILE, h - y) for y in ys]
-
     out, drop, empty = [], 0, 0
-    for j, ty in enumerate(ys):
-        for i, tx in enumerate(xs):
-            tw, th = tws[i], ths[j]
+    for j, (ty, th) in enumerate(edge_blocks(h)):
+        for i, (tx, tw) in enumerate(edge_blocks(w)):
             kept = []
             for cid, x, y, bw, bh in boxes:
                 if not (tx <= x + bw / 2 < tx + tw and ty <= y + bh / 2 < ty + th):
@@ -126,8 +122,9 @@ def main():
             anns.append({"id": len(anns) + 1, "image_id": iid, "category_id": cid,
                          "bbox": [x, y, bw, bh], "area": round(bw * bh, 1), "iscrowd": 0})
 
+    out_stem = os.path.splitext(os.path.basename(a.ann))[0]
     json.dump({"images": images, "annotations": anns, "categories": d["categories"]},
-              open(f"{ROOT}/coco/{slug(a.dataset)}_tiles.json", "w"))
+              open(f"{ROOT}/coco/{out_stem}_tiles.json", "w"))
     json.dump([[c["name"]] for c in d["categories"]],
               open(f"{ROOT}/coco/{slug(a.dataset)}_class_texts.json", "w"), ensure_ascii=False)
 
