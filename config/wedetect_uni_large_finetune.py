@@ -110,8 +110,8 @@ custom_hooks = [
         switch_pipeline=train_pipeline_stage2)
 ]
 
-# FOD 五集 objectness 标注（data_prep/fod_objectness.py 生成，category_id 全并 0）
-coco_train_dataset = dict(
+# FOD 五集 objectness（data_prep/fod_objectness.py 生成，category_id 全并 0）
+fod_dataset = dict(
     type='YOLOv5CocoDataset',
     metainfo=dict(classes=['object']),
     data_root='/mnt/sda1/datasets/drone',
@@ -119,6 +119,22 @@ coco_train_dataset = dict(
     data_prefix=dict(img=''),
     filter_cfg=dict(filter_empty_gt=False, min_size=32),
     pipeline=train_pipeline)
+
+# COCO replay（data_prep/make_coco_replay.py 严格口径 31,623 图 15.9 万框，>256px 占 17.6%）：
+# FOD 全是航拍小目标，纯 FOD 微调把尺度先验拉向小目标，大目标被拆成碎片框（UVSD 实测）
+replay_dataset = dict(
+    type='YOLOv5CocoDataset',
+    metainfo=dict(classes=['object']),
+    data_root='/mnt/sda1/datasets/coco',
+    ann_file='annotations/coco_replay_objectness.json',
+    data_prefix=dict(img=''),
+    filter_cfg=dict(filter_empty_gt=False, min_size=32),
+    pipeline=train_pipeline)
+
+coco_train_dataset = dict(
+    _delete_=True,
+    type='ConcatDataset',
+    datasets=[fod_dataset, replay_dataset])
 
 train_dataloader = dict(
     batch_size=train_batch_size_per_gpu,

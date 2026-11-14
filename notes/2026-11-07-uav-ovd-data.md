@@ -218,19 +218,50 @@ COD 图源只有一批：**SkyFind 剔四域 + 同帧去重后的 15,432 张**�
 
 流程（仿 WeDetect 数据引擎，标注器用裸 Qwen3-VL prompting，）：
 
-**1. Uni 全召回**
+1. Uni 全召回：全量出 objectness 框（长边 >1280 切 tile），输出 `SkyFind/cod_uni_boxes_fodcoco.jsonl`
+2. SAM 3 框提质：≥16px 框 box-prompt 出 mask，`mask2bbox` 反算紧框替换原框，糊 tile/贴边垃圾框丢弃
+3. VLM 按框坐标命名：Qwen3-VL 输入原图（4K 在预算内）加修正后的框坐标，输出 `coarse/mid/fine` 三段；框不对即拒识丢框，prompt 里写死
+4. 置信度分层：高分直收、低分人审、16px 以下全人工
 
-Large-Uni 全量出 objectness 框。长边 >1280 内存切 1280×1280（模型输入 1280，tile 原生尺度推理），框映射回原图坐标；后处理：每 tile NMS 0.7 → top-500 截断 → 跨 tile 并集 → score>0.1 → NMS 0.7。输出 `SkyFind/cod_uni_boxes.jsonl`，每图一行 `{file, width, height, boxes: [[x,y,w,h,score],…]}`。断点续跑，双卡分片：
+
+##### Uni 召回实测与微调决策
+
+Large-Uni 全量出 objectness 框。长边 >1280 内存切 1280×1280（模型输入 1280，tile 原生尺度推理），框映射回原图坐标；后处理：每 tile NMS 0.7 → top-500 截断 → 跨 tile 并集 → score>0.1 → NMS 0.5。输出 `SkyFind/cod_uni_boxes_fodcoco.jsonl`，每图一行 `{file, width, height, boxes: [[x,y,w,h,score],…]}`。断点续跑，双卡分片：
 
 ```bash
 cd ~/projects/research/WeDetect
-CUDA_VISIBLE_DEVICES=2 SHARD=0 python data_prep/cod_uni_recall.py
-CUDA_VISIBLE_DEVICES=3 SHARD=1 python data_prep/cod_uni_recall.py
+CUDA_VISIBLE_DEVICES=2 SHARD=0 .venv/bin/python data_prep/cod_uni_recall.py
+CUDA_VISIBLE_DEVICES=3 SHARD=1 .venv/bin/python data_prep/cod_uni_recall.py
 ```
 
-**2. SAM 3 框提质**
+**第一步：纯 FOD 微调**
 
-权重走魔搭 `facebook/sam3`（HF gated 且大陆信息申请必拒，别走 HF）。transformers ≥4.58 自带 Sam3（box-prompt 走 `input_boxes`），不用 clone 官方仓库；主 venv 钉在 4.57.1 没有 Sam3，须独立环境。每图全部 ≥16px 框 box-prompt 一次出 mask（16px 以下不过 SAM，直接全人工）；mask 糊满 tile 或贴边的垃圾框直接丢，`mask2bbox` 反算紧框替换原框：
+- 微调前（`cod_uni_boxes.jsonl`）：153 万框 17.2% 大框（>512px），分数与正常框重合（0.23 vs 0.25）阈值杀不掉——Uni 没见过航拍，实例粒度错乱
+- 修法：FOD 69,465 图 / 182 万框（类别并 0 当 objectness）解冻 head/neck 微调 Uni，配方 `wedetect_uni_large_finetune.py`（large + 1280）
+- ckpt `wedetect_large_uni_fod.pth`，全量复召 `cod_uni_boxes_fod.jsonl`：尺度先验被拉向小目标，UVSD（低空停车场）70% 图含碎片大框，FOD 缺 >256px 尺度段
+
+**第二步：FOD + COCO replay 重训**
+
+- 修法：COCO replay，`make_coco_replay.py` 严格口径（COCO 图全部标注框 ∈ 22 类白名单：交通工具/交通设施/动物，与 FOD 词表重合），31,623 图 15.9 万框，`ConcatDataset` 挂 FOD+COCO 共 154,810 图，4 epochs
+- ckpt `wedetect_large_uni_fodcoco.pth`，全量复召 `cod_uni_boxes_fodcoco.jsonl`
+
+| 全量召回（15,423 图） | 框/图 | 大框/图 | 大框占比 | 分数中位 | 大框分中位 | UVSD 大框/图 |
+|---|---:|---:|---:|---:|---:|---:|
+| base | 88.9 | 13.74 | 15.4% | 0.260 | 0.250 | 5.00 |
+| fod | 37.5 | 2.85 | 7.6% | 0.501 | 0.779 | 2.69 |
+| fodcoco | 37.9 | 3.05 | 8.0% | 0.501 | 0.898 | 2.78 |
+- 所有模型均采用 nms 0.5 
+- 结论：大框量基本没回来（2.85→3.05，base 是 5.00），收益全在置信度（大框分中位 0.78→0.90）；fodcoco 更少更自信，下游 SAM 3 + Qwen 用它
+
+训练命令（tmux 里跑，续训加 `--resume`）：
+
+```bash
+CUDA_VISIBLE_DEVICES=2,3 .venv/bin/torchrun --nproc_per_node=2 train.py config/wedetect_uni_large_finetune.py --launcher pytorch
+```
+
+##### SAM 3 框提质
+
+权重走 `facebook/sam3`。每图全部 ≥16px 框 box-prompt 一次出 mask（16px 以下不过 SAM，直接全人工）；mask 糊满 tile 或贴边的垃圾框直接丢，`mask2bbox` 反算紧框替换原框：
 
 ```bash
 modelscope download --model facebook/sam3 --local_dir checkpoints/sam3
@@ -239,20 +270,4 @@ modelscope download --model facebook/sam3 --local_dir checkpoints/sam3
 uv venv .venv-sam3 --python 3.12 && source .venv-sam3/bin/activate
 uv pip install "torch>=2.6" torchvision -i https://mirrors.aliyun.com/pypi/simple/
 uv pip install "transformers>=5"
-```
-3. VLM 按框坐标命名：Qwen3-VL 输入原图（4K 在预算内）加修正后的框坐标，输出 `coarse/mid/fine` 三段；框不对即拒识丢框，prompt 里写死
-4. 置信度分层：高分直收、低分人审、16px 以下全人工
-
-##### Uni 召回实测与微调决策
-
-- 实测（微调前，`cod_uni_boxes.jsonl`）：153 万框，17.2% 为 >512px 大框（Semantic 源 37.6%）；大框打在建筑群/树冠/路面，与正常框分数分布几乎重合（中位 0.23 vs 0.25），阈值杀不掉
-- 根因：Uni objectness 是 COCO 域训的，没见过航拍视角，实例粒度错乱，属域适配缺口不是阈值问题
-- 决策：先用 FOD 微调 Uni 再重跑召回——69,465 图 / 182 万穷尽框类别并 0 当 objectness 训练集，解冻 head/neck（只用框不用 embedding，漂移无影响），配方 `wedetect_uni_base_finetune.py` 改 large + 1280；微调后大框比例复测，再决定是否加尺寸上限
-- 预估框量微调后实测；微调前实测 153 万不可用（按穷尽标注口径预期 30–60 万，15,432 图 × 20–40 目标）
-
-微调命令（数据 `coco/fod_objectness.json`，123,187 图 / 2,064,562 框，tile 版五集合并）：
-
-```bash
-# tmux 里跑（关终端不死）续训加 `--resume`。约 30,800 iter/epoch（总 batch 4）
-CUDA_VISIBLE_DEVICES=2,3 .venv/bin/torchrun --nproc_per_node=2 train.py config/wedetect_uni_large_finetune.py --launcher pytorch
 ```
