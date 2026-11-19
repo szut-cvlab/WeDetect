@@ -200,7 +200,7 @@ datasetninja 重打包版，RGB 与红外成对，只用 RGB 半边。XML 标注
 
 #### 2.2.0 图源与管线
 
-COD 图源只有一批：**SkyFind 剔四域 + 同帧去重后的 15,432 张**，清单 `SkyFind/cod.json`（`{root, images, stats, 阈值}`），下游只读它。FOD 五集 1.82M 框不动。按源统计、划分实测、下载解压与去重细节见 [2026-11-08-uav-skyfind.md](2026-11-08-uav-skyfind.md)。
+COD 图源只有一批：**SkyFind 剔四域 + 同帧去重 + VLM 航拍过滤后的 14,716 张**，清单 `SkyFind/cod_filtered.json`（`{root, images, stats, 阈值}`），下游只读它。FOD 五集 1.82M 框不动。按源统计、划分实测、下载解压与去重细节见 [2026-11-08-uav-skyfind.md](2026-11-08-uav-skyfind.md)。
 
 | | 图数 | 说明 |
 | --- | ---: | --- |
@@ -209,19 +209,19 @@ COD 图源只有一批：**SkyFind 剔四域 + 同帧去重后的 15,432 张**�
 | − DroneVehicle | 4,829 | FOD 重复 |
 | − SeaDronesSee / MOBDrone | 4,736 | 考卷二整集留出，已移到 `SkyFind/test/` |
 | 剩（21,346）| 21,346 | 自爬 8,216 + UVSD 3,950 + AU-AIR 2,280 + UAVDT 1,934 + Okutama 1,521 + CARPK 1,221 + Stanford 1,170 + 分割四域 1,054 |
-| **− 同帧去重** | −5,914 | dHash 汉明 ≤6，按源内部、簇内取最清晰那张（`data_prep/skyfind_dedup.py`） |
-| **进 COD** | **15,432** | 清单 `SkyFind/cod.json` |
-
-标注全由我们自己的管线产出，流程见 §2.2.1。进管线前对 FOD 池跑 pHash 兜底。
+| − 同帧去重 | −5,914 | dHash 汉明 ≤6，按源内部、簇内取最清晰那张（`data_prep/skyfind_dedup.py`） |
+| − VLM 航拍过滤 | −716 | 自爬地拍 714 + 坏图 2（`data_prep/crawl_vlm_filter.py`，DeepSeek-V4.1-Flash 判视角，20 张人工锚点对拍全一致，16 张抽查 0 污染；逐图标注 `SkyFind/crawl_labels.json`） |
+| **进 COD** | **14,716** | 清单 `SkyFind/cod_filtered.json`，召回结果 `cod_uni_boxes_fodcoco.jsonl` 已同步剔除对应行 |
 
 #### 2.2.1 产出（待跑）
 
 流程（仿 WeDetect 数据引擎，标注器用裸 Qwen3-VL prompting，）：
 
 1. Uni 全召回：全量出 objectness 框（长边 >1280 切 tile），输出 `SkyFind/cod_uni_boxes_fodcoco.jsonl`
-2. SAM 3 框提质：≥16px 框 box-prompt 出 mask，`mask2bbox` 反算紧框替换原框，糊 tile/贴边垃圾框丢弃
+2. SAM 3 框提质：全部召回框（无尺寸过滤）整图 + 全框一次前向 box-prompt 出 mask；框内空 mask 丢弃；无响应框与任何认领 mask 有重叠即碎框丢弃、完全孤立保留原始框（`data_prep/sam3_recheck.py`）
 3. VLM 按框坐标命名：Qwen3-VL 输入原图（4K 在预算内）加修正后的框坐标，输出 `coarse/mid/fine` 三段；框不对即拒识丢框，prompt 里写死
-4. 置信度分层：高分直收、低分人审、16px 以下全人工
+4. 概念补召回：本图 fine 概念 → SAM3 逐概念 tile 出框+mask，标签=概念词，分数阈值放低宁多收 → 与已有框 NMS 0.5 去重只留新增，新框过 mask 前景占比直收（`data_prep/sam3_concept_test.py`）
+5. 置信度分层：无人工——过 VLM 命名的框全部直收（拒识即丢），16px 以下小框同口径，不单独分档
 
 
 ##### Uni 召回实测与微调决策
@@ -245,13 +245,14 @@ CUDA_VISIBLE_DEVICES=3 SHARD=1 .venv/bin/python data_prep/cod_uni_recall.py
 - 修法：COCO replay，`make_coco_replay.py` 严格口径（COCO 图全部标注框 ∈ 22 类白名单：交通工具/交通设施/动物，与 FOD 词表重合），31,623 图 15.9 万框，`ConcatDataset` 挂 FOD+COCO 共 154,810 图，4 epochs
 - ckpt `wedetect_large_uni_fodcoco.pth`，全量复召 `cod_uni_boxes_fodcoco.jsonl`
 
-| 全量召回（15,423 图） | 框/图 | 大框/图 | 大框占比 | 分数中位 | 大框分中位 | UVSD 大框/图 |
+| 全量召回（14,709 有效图，均 NMS 0.5） | 框/图 | 大框/图 | 大框占比 | 分数中位 | 大框分中位 | UVSD 大框/图 |
 |---|---:|---:|---:|---:|---:|---:|
-| base | 88.9 | 13.74 | 15.4% | 0.260 | 0.250 | 5.00 |
-| fod | 37.5 | 2.85 | 7.6% | 0.501 | 0.779 | 2.69 |
-| fodcoco | 37.9 | 3.05 | 8.0% | 0.501 | 0.898 | 2.78 |
+| base | 90.4 | 13.92 | 15.4% | 0.259 | 0.250 | 5.25 |
+| fod | 38.9 | 2.97 | 7.6% | 0.505 | 0.780 | 2.82 |
+| fodcoco | 39.1 | 3.16 | 8.1% | 0.504 | 0.898 | 2.91 |
 - 所有模型均采用 nms 0.5 
-- 结论：大框量基本没回来（2.85→3.05，base 是 5.00），收益全在置信度（大框分中位 0.78→0.90）；fodcoco 更少更自信，下游 SAM 3 + Qwen 用它
+- 结论：大框量基本没回来（2.97→3.16，base 是 5.25），收益全在置信度（大框分中位 0.78→0.90）；fodcoco 更少更自信，下游 SAM 3 + Qwen 用它
+- fodcoco 优势：框的质量更高，密集场景剪低分垃圾框（Uavid 117→69）、稀疏场景找回漏检（Semantic 22→29）
 
 训练命令（tmux 里跑，续训加 `--resume`）：
 
@@ -261,7 +262,7 @@ CUDA_VISIBLE_DEVICES=2,3 .venv/bin/torchrun --nproc_per_node=2 train.py config/w
 
 ##### SAM 3 框提质
 
-权重走 `facebook/sam3`。每图全部 ≥16px 框 box-prompt 一次出 mask（16px 以下不过 SAM，直接全人工）；mask 糊满 tile 或贴边的垃圾框直接丢，`mask2bbox` 反算紧框替换原框：
+权重走 `facebook/sam3`。全部召回框（无尺寸过滤）整图 + 全框一次前向 box-prompt 出 mask，prompt 框按 IoU≥0.3 认领最佳实例，`mask2bbox` 只取框内前景反算紧框替换原框；框内空 mask 丢弃；无响应框与认领 mask 有重叠即碎框丢弃、完全孤立保留原始框（`data_prep/sam3_recheck.py`）。不切图：tile 边界截断框对紧框是硬伤，代价是 4K 图小框（<64px）的 mask 被 1008 压缩打残，靠步骤 3 拒识兜底：
 
 ```bash
 modelscope download --model facebook/sam3 --local_dir checkpoints/sam3
@@ -271,3 +272,51 @@ uv venv .venv-sam3 --python 3.12 && source .venv-sam3/bin/activate
 uv pip install "torch>=2.6" torchvision -i https://mirrors.aliyun.com/pypi/simple/
 uv pip install "transformers>=5"
 ```
+
+全量运行（输入 `cod_uni_boxes_fodcoco.jsonl`，输出 `cod_uni_boxes_fodcoco_sam3.jsonl` 同格式，score 沿用）：
+
+```bash
+CUDA_VISIBLE_DEVICES=2 SHARD=0 NUM_SHARDS=2 .venv-sam3/bin/python data_prep/sam3_recheck.py
+CUDA_VISIBLE_DEVICES=3 SHARD=1 NUM_SHARDS=2 .venv-sam3/bin/python data_prep/sam3_recheck.py
+```
+
+全量实测（2026-11-15）：
+
+| | 数值 |
+| --- | ---: |
+| 行数 | 14,716（含 7 缺图透传） |
+| 输入框 | 575,568 |
+| 输出框 | 534,252（保留 92.8%） |
+| 丢弃 | 41,316（无响应碎框 + 空mask） |
+| 退化框 | 7 个 1px 框，留给步骤 3 拒识 |
+
+
+#### VLM 按框坐标命名
+
+一框一调用（WeDetect 数据引擎口径，`data_prep/vlm_name_boxes.py`）：
+
+- 模型：本地 vLLM `Qwen3.8-27B-FP8`（`10.18.32.108:30000`，无限流）；坐标写 `Box: (x1, y1, x2, y2)`，单位是发送图像的绝对像素（Qwen2.5-VL 起官方约定）
+- 送图：裁剪窗 3 倍框（最小 128px，窗口随框走），小于 448px 上采样到 448（小目标多摊 token）；目标用品红外扩 3px 描边（零像素覆盖、品红非自然色不污染判断；WeDetect 同款锚点思路，其靠 SFT 适应高亮）；定位 = 文本坐标 + 画框双信号
+- 三段口径：coarse=大类（vehicle/person/boat…）、mid=常见类型（car/van/truck/motor…）、fine=细粒度变体（sedan/hatchback/SUV…）；fine 不确定回填 mid，下游取 fine（缺则 mid）当类名
+- 拒识：框内没有以它为主体的单一物体（空框/一片区域/一群物体）→ 剔除；贴边截断但可辨认 → 正常标注
+- 并发：两段流水线——预处理池（4 线程，读图/裁剪/编码）+ 发送池（14 线程，纯网络 IO，Session 连接复用），逐框队列缓冲，`as_completed` 平滑供给
+- 输出 `SkyFind/cod_uni_boxes_fodcoco_sam3_named.jsonl`：一行一框 `{file, i, box, score, coarse, mid, fine}`，拒识行 `{file, i, box, score, reject: true}` 也落盘（续跑不重问，下游过滤 reject 行）；断点 = 已含的 `(file, i)`，失败框不落盘续跑自动补
+
+全量实测（2026-11-19）：
+
+| | 数值 |
+| --- | ---: |
+| 输入框 | 534,252 |
+| 成功命名 | 500,203（93.6%） |
+| 拒识丢弃 | 34,049（6.4%） |
+| 守恒 | 输出 = 输入，0 缺失 |
+
+
+
+| 词表 | 原始词数 | 清洗后 | top |
+| --- | ---: | ---: | --- |
+| coarse | 62 | —（训练不用） | vehicle 407,960 / person 60,155 / boat 25,775 / animal 3,078 |
+| mid | 316 | 239（剔 63 个 JUNK） | car 342,609 / pedestrian 56,271 / boat 27,795 / truck 19,984 |
+| fine | 437 | **298（训练类名）** | sedan 175,324 / car 130,394 / pedestrian 56,257 / suv 21,384 |
+
+清洗规则见 `data_prep/normalize_vocab.py`：同义词合并 + 拼写修复 + motor 按 coarse 分流（vehicle→motorcycle / boat→motorboat）+ JUNK 剔除（部件/背景/泛词 250 框）。训练类名 = 清洗后 fine（脏则回退 mid），产出 `named_norm.jsonl` 499,952 框、零 reject 行。规模：298 类 ≈ COCO 80 类的 3.7 倍、LVIS 1,203 类的 1/4；头部长尾陡（sedan+car+pedestrian 占 72%），179 个尾类 <10 框、112 个 ≤2 框。

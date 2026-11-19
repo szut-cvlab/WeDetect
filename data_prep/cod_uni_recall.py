@@ -32,7 +32,7 @@ TILE = 1280
 SCORE_THRE = 0.1     # 并集后最终过滤
 NUM_PROPOSALS = 500  # 每 tile top-K
 CKPT = REPO / 'checkpoints/WeDetect/wedetect_large_uni_fodcoco.pth'
-COD_JSON = '/mnt/sda1/datasets/drone/SkyFind/cod.json'
+COD_JSON = '/mnt/sda1/datasets/drone/SkyFind/cod_filtered.json'
 OUT_JSONL = '/mnt/sda1/datasets/drone/SkyFind/cod_uni_boxes_fodcoco.jsonl'
 SHARD = int(os.environ.get('SHARD', '0'))      # 双卡跑：0 和 1，N_SHARDS=2
 N_SHARDS = int(os.environ.get('N_SHARDS', '2'))
