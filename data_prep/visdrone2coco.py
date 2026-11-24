@@ -44,13 +44,16 @@ ROOT = "/mnt/sda1/datasets/drone/VisDrone"
 DRONE_ROOT = "/mnt/sda1/datasets/drone"
 OUT_DIR = f"{DRONE_ROOT}/coco"
 SPLITS = ["train", "val"]
+# 统一词表 id（COD+FOD 合并词表，见 notes/2026-11-07 §2.3）
+VOCAB = json.load(open(f"{OUT_DIR}/vocab_merged.json"))
+NAME2UID = {n: i for i, n in enumerate(VOCAB)}
 # 类名规则：只用空格分隔，连字符与下划线一律换掉（不改写词义）。
 # 官方 awning-tricycle 写成 awning tricycle；两者文本 embedding 余弦 0.980，
 # 精度无差，归一只是为了合并词表时同一概念不再裂成两个类（check_class_tokenizer.py）。
 CLASSES = ["pedestrian", "people", "bicycle", "car", "van", "truck",
-           "tricycle", "awning tricycle", "bus", "motor"]
+           "tricycle", "awning tricycle", "bus", "motorcycle"]
 images, anns = [], []
-cats = [{"id": i, "name": n, "supercategory": ""} for i, n in enumerate(CLASSES)]
+cats = [{"id": NAME2UID[n], "name": n, "supercategory": ""} for n in CLASSES]
 aid = 0
 stat = Counter()
 for sp in SPLITS:
@@ -97,7 +100,7 @@ for sp in SPLITS:
             if score == 0:
                 stat["score0"] += 1
             aid += 1
-            anns.append({"id": aid, "image_id": iid, "category_id": c - 1,
+            anns.append({"id": aid, "image_id": iid, "category_id": NAME2UID[CLASSES[c - 1]],
                          "bbox": [x, y, ww2, hh2], "area": ww2 * hh2,
                          "iscrowd": 0, "score": score,
                          "truncate": trunc, "occlusion": occ})
@@ -112,8 +115,8 @@ print(f"images={len(images)} boxes={len(anns)}")
 for k, v in sorted(stat.items()):
     print(f"  {k:12s} {v}")
 cnt = Counter(a["category_id"] for a in anns)
-for i, n in enumerate(CLASSES):
-    print(f"  {n:16s} {cnt[i]}")
+for n in CLASSES:
+    print(f"  {n:16s} {cnt[NAME2UID[n]]}")
 print("  truncate", Counter(a["truncate"] for a in anns))
 print("  occlusion", Counter(a["occlusion"] for a in anns))
 side = [min(a["bbox"][2], a["bbox"][3]) for a in anns]

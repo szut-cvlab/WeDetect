@@ -42,6 +42,9 @@ OUT_DIR = f"{DRONE_ROOT}/coco"
 SPLITS = [("train", "train/trainimg", "train/trainlabel"),
           ("val", "val/valimg", "val/vallabel"),
           ("test", "test/testimg", "test/testlabel")]
+# 统一词表 id（COD+FOD 合并词表，见 notes/2026-11-07 §2.3）
+VOCAB = json.load(open(f"{OUT_DIR}/vocab_merged.json"))
+NAME2UID = {n: i for i, n in enumerate(VOCAB)}
 # 类名规则：只用空格分隔。官方 classTitle freight_car 归一为 freight car，
 # 与 ATR-UMOD 的 freight car 合并成同一个类；错拼由 ALIAS 收敛。
 CLASSES = ["car", "truck", "bus", "van", "freight car"]
@@ -49,9 +52,9 @@ ALIAS = {"car": "car", "truck": "truck", "truvk": "truck", "bus": "bus", "van": 
          "feright car": "freight car", "feright_car": "freight car",
          "feright": "freight car", "freight_car": "freight car",
          "freight car": "freight car"}
-NAME2ID = {n: i for i, n in enumerate(CLASSES)}
+NAME2ID = {n: NAME2UID[n] for n in CLASSES}
 images, anns = [], []
-cats = [{"id": i, "name": n, "supercategory": "vehicle"} for i, n in enumerate(CLASSES)]
+cats = [{"id": NAME2UID[n], "name": n, "supercategory": "vehicle"} for n in CLASSES]
 aid = 0
 stat = Counter()
 edges = []
@@ -122,8 +125,8 @@ print(f"images={len(images)} boxes={len(anns)}")
 for k, v in sorted(stat.items()):
     print(f"  {k:14s} {v}")
 cnt = Counter(a["category_id"] for a in anns)
-for i, n in enumerate(CLASSES):
-    print(f"  {n:12s} {cnt[i]}")
+for n in CLASSES:
+    print(f"  {n:12s} {cnt[NAME2ID[n]]}")
 by_split = Counter(im["file_name"].split("/")[1] for im in images)
 print("  分 split:", dict(by_split))
 for lo, hi in [(0, 8), (8, 16), (16, 32), (32, 64), (64, 10 ** 9)]:

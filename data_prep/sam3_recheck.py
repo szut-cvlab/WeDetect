@@ -44,8 +44,8 @@ def mask2bbox(mask, W, H, box):
     bx1, by1, bx2, by2 = map(int, box)
     sub = mask.reshape(H, W)[by1:by2, bx1:bx2]
     ys, xs = sub.nonzero(as_tuple=True)
-    if len(ys) == 0:
-        return None
+    if len(ys) == 0 or xs.max() == xs.min() or ys.max() == ys.min():
+        return None  # 无前景或前景是一条线（零延展），转 xywh 会出 w/h=0 的退化框
     return [bx1 + int(xs.min()), by1 + int(ys.min()),
             bx1 + int(xs.max()), by1 + int(ys.max())]
 
@@ -91,7 +91,7 @@ def process_image(model, proc, img, keep):
     cand_boxes = pred_boxes[cand] * torch.tensor([W, H, W, H], dtype=torch.float32)
 
     res = [None] * len(keep)
-    stats = {'无响应碎框': 0, '无响应保留': 0, '空mask': 0, '紧框': 0}
+    stats = {'无响应碎框': 0, '无响应保留': 0, '空mask': 0, '紧框': 0, '小框保留原框': 0}
     matched = []
     pb = torch.tensor(keep, dtype=torch.float32)
     if len(cand):
@@ -102,6 +102,12 @@ def process_image(model, proc, img, keep):
 
     unresp = []  # 无响应框 (i, box)
     for i, (x1, y1, x2, y2) in enumerate(keep):
+        if min(x2 - x1, y2 - y1) < 8:
+            # 短边 <8px 直通：288 分辨率下 mask 不足 1 像素，认领/收缩/碎框判定全是噪声，
+            # 原样保留（尺寸永不变化；垃圾碎片由下游 merge 的 <4px 过滤兜底）
+            res[i] = [x1, y1, x2, y2]
+            stats['小框保留原框'] += 1
+            continue
         if best_iou[i] < MATCH_IOU:
             unresp.append((i, (x1, y1, x2, y2)))
             continue
@@ -169,7 +175,7 @@ def main():
     proc = Sam3Processor.from_pretrained(CKPT)
     model = Sam3Model.from_pretrained(CKPT).cuda().eval()
 
-    tot = {'紧框': 0, '无响应保留': 0, '无响应碎框': 0, '空mask': 0}
+    tot = {'紧框': 0, '无响应保留': 0, '无响应碎框': 0, '空mask': 0, '小框保留原框': 0}
     t_start = time.time()
     with open(JSONL_OUT, 'a') as fout:
         for k, r in enumerate(tqdm(recs, desc='sam3 refine', unit='img'), 1):

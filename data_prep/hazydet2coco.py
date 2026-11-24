@@ -38,6 +38,9 @@ from concurrent.futures import ProcessPoolExecutor
 ROOT = "/mnt/sda1/datasets/drone/HazyDet"
 DRONE_ROOT = "/mnt/sda1/datasets/drone"
 OUT_DIR = f"{DRONE_ROOT}/coco"
+# 统一词表 id（COD+FOD 合并词表，见 notes/2026-11-07 §2.3）
+VOCAB = json.load(open(f"{OUT_DIR}/vocab_merged.json"))
+NAME2UID = {n: i for i, n in enumerate(VOCAB)}
 CLASSES = ["car", "truck", "bus"]
 SPLITS = ["train", "val", "test"]
 MERGE_UNION_RATIO = 1.05   # 并集÷较大那张 ≤ 此值才判为同帧冗余
@@ -112,7 +115,7 @@ for sp in SPLITS:
             if bw <= 0 or bh <= 0:
                 stat["裁到图外"] += 1
                 continue
-            conv.append((CLASSES.index(cn), (x, y, bw, bh)))
+            conv.append((NAME2UID[cn], (x, y, bw, bh)))
             cls[cn] += 1
         if not conv:
             stat["清洗后变空"] += 1
@@ -144,7 +147,7 @@ for sp in ["train", "test"]:
             if bw <= 0 or bh <= 0:
                 stat["退化框"] += 1
                 continue
-            conv.append((CLASSES.index(cn), (x, y, bw, bh)))
+            conv.append((NAME2UID[cn], (x, y, bw, bh)))
         if not conv:
             stat["清洗后变空"] += 1
             continue
@@ -197,15 +200,17 @@ for rel, w, h, conv, tag in records:
 os.makedirs(OUT_DIR, exist_ok=True)
 with open(f"{OUT_DIR}/hazydet.json", "w") as f:
     json.dump({"images": images, "annotations": anns,
-               "categories": [{"id": i, "name": n, "supercategory": ""}
-                              for i, n in enumerate(CLASSES)]}, f)
+               "categories": [{"id": NAME2UID[n], "name": n, "supercategory": ""}
+                              for n in CLASSES]}, f)
+json.dump([[n] for n in CLASSES], open(f"{OUT_DIR}/hazydet_class_texts.json", "w"),
+          ensure_ascii=False)
 
 print(f"images={len(images)} boxes={len(anns)} 越界={oor}")
 for k, v in sorted(stat.items()):
     print(f"  {k:14} {v}")
 cnt = Counter(a["category_id"] for a in anns)
-for i, n in enumerate(CLASSES):
-    print(f"  {n:8} {cnt[i]}")
+for n in CLASSES:
+    print(f"  {n:8} {cnt[NAME2UID[n]]}")
 side = [min(a["bbox"][2], a["bbox"][3]) for a in anns]
 for lo, hi in [(0, 8), (8, 16), (16, 32), (32, 64), (64, 10 ** 9)]:
     c = sum(1 for s in side if lo <= s < hi)

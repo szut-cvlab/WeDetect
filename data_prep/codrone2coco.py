@@ -18,10 +18,9 @@ OBB -> 水平框
     四顶点取 min/max 得轴对齐外接矩形，再写 [x,y,w,h]。WeDetect 检测头只出水平框。
 
 产物
-    coco/codrone.json            整图，file_name 形如 train/images/xxx.jpg
-    类名表不在这里写：它要跟着入池的那份（切块后的 codrone_tiles.json）走，
-    slice_coco.py 会从 categories 生成 codrone_class_texts.json
-    file_name 是相对 CODrone/ 的路径（切块脚本会重写成相对 drone/ 的 tiles 路径）
+    coco/codrone.json            整图，file_name 形如 CODrone/train/images/xxx.jpg（相对 drone/，与其余集一致）
+    coco/codrone_class_texts.json  类名表
+    切块版 codrone_tiles.json 由 slice_coco.py 生成，其 file_name 重写为相对 drone/ 的 tiles 路径
 
 运行
     python3 data_prep/codrone2coco.py
@@ -34,10 +33,14 @@ ROOT = "/mnt/sda1/datasets/drone/CODrone"
 DRONE_ROOT = "/mnt/sda1/datasets/drone"
 OUT_DIR = f"{DRONE_ROOT}/coco"
 SPLITS = ["train", "val", "test"]
-CLASSES = ["car", "people", "motor", "truck", "traffic sign", "traffic light",
+# 统一词表 id（COD+FOD 合并词表，见 notes/2026-11-07 §2.3）
+VOCAB = json.load(open(f"{OUT_DIR}/vocab_merged.json"))
+NAME2UID = {n: i for i, n in enumerate(VOCAB)}
+CLASSES = ["car", "people", "motorcycle", "truck", "traffic sign", "traffic light",
            "boat", "bus", "bicycle", "tricycle", "ship", "bridge"]
-NAME2ID = {n: i for i, n in enumerate(CLASSES)}
-RAW2NAME = {"traffic-sign": "traffic sign", "traffic-light": "traffic light",
+NAME2ID = {n: NAME2UID[n] for n in CLASSES}
+RAW2NAME = {"motor": "motorcycle",
+            "traffic-sign": "traffic sign", "traffic-light": "traffic light",
             "traffic_sign": "traffic sign", "traffic_light": "traffic light"}
 
 images, anns = [], []
@@ -79,7 +82,7 @@ for sp in SPLITS:
                 continue
             objs.append((NAME2ID[name], x1, y1, bw, bh))
         iid = len(images)
-        images.append({"id": iid, "file_name": f"{sp}/images/{fn[:-4]}.jpg",
+        images.append({"id": iid, "file_name": f"CODrone/{sp}/images/{fn[:-4]}.jpg",
                        "width": w, "height": h, "ignore_regions": ign})
         for c, x1, y1, bw, bh in objs:
             aid += 1
@@ -91,20 +94,22 @@ for sp in SPLITS:
 
 os.makedirs(OUT_DIR, exist_ok=True)
 json.dump({"images": images, "annotations": anns,
-           "categories": [{"id": i, "name": n, "supercategory": ""}
-                          for i, n in enumerate(CLASSES)]},
+           "categories": [{"id": NAME2ID[n], "name": n, "supercategory": ""}
+                          for n in CLASSES]},
           open(f"{OUT_DIR}/codrone.json", "w"))
+json.dump([[n] for n in CLASSES], open(f"{OUT_DIR}/codrone_class_texts.json", "w"),
+          ensure_ascii=False)
 
 print(f"images={len(images)} boxes={len(anns)}")
 for k, v in sorted(stat.items()):
     print(f"  {k:10} {v}")
 cnt = Counter(a["category_id"] for a in anns)
-for i, n in enumerate(CLASSES):
-    print(f"  {n:14} {cnt[i]}")
+for n in CLASSES:
+    print(f"  {n:14} {cnt[NAME2ID[n]]}")
 for lo, hi in [(0, 8), (8, 16), (16, 32), (32, 64), (64, 10 ** 9)]:
     c = sum(1 for s in sides if lo <= s < hi)
     print(f"  edge [{lo},{hi}) = {c} ({c/len(sides)*100:.1f}%)")
 
-# 路径校验：file_name 相对 CODrone/
-missing = [im["file_name"] for im in images if not os.path.exists(f"{ROOT}/{im['file_name']}")]
+# 路径校验：file_name 相对 /mnt/sda1/datasets/drone
+missing = [im["file_name"] for im in images if not os.path.exists(f"{DRONE_ROOT}/{im['file_name']}")]
 print(f"  file_name 校验 missing={len(missing)}", missing[:3])

@@ -6,15 +6,16 @@
 输出  named_norm_recover.jsonl 只写 SAM3 新增行，追加写：
       {file, i, box:[x,y,w,h], score, label}；label 是单一 fine 词。
       i 从该图已有框 max(i)+1 续编。最终框全集 = JSONL_IN + 本文件，转 COCO 时拼接
-断点  输出里出现过的 file 整图跳过，中断重跑自动续
-运行  双卡并行（改下面 SHARD/N_SHARDS，断点按图互斥）：
-      CUDA_VISIBLE_DEVICES=0 .venv-sam3/bin/python data_prep/sam3_recover.py &   # SHARD=0
-      CUDA_VISIBLE_DEVICES=1 .venv-sam3/bin/python data_prep/sam3_recover.py &   # SHARD=1
+断点  输出里有行的 file 跳过，中断重跑自动续
+运行  一条命令自动按 GPUS 列表多卡并行（主进程分片起子进程，分片互斥；中断重跑同一命令自动续）：
+      .venv-sam3/bin/python data_prep/sam3_recover.py
 调试  test_one('000811.jpg') 单图试跑，只打印不落盘，存绿框可视化图
 """
 import os
 import json
 import math
+import sys
+import subprocess
 from pathlib import Path
 
 import torch
@@ -23,20 +24,17 @@ from PIL import Image, ImageDraw, ImageFont
 from tqdm import tqdm
 from transformers import Sam3Processor, Sam3Model
 
-os.environ.setdefault('CUDA_VISIBLE_DEVICES', '3')
-
 REPO = Path(__file__).resolve().parent.parent
 CKPT = REPO / 'checkpoints/sam3'
 ROOT = Path('/mnt/sda1/datasets/drone/SkyFind/train')
-JSONL_IN = Path('/mnt/sda1/datasets/drone/SkyFind/cod_uni_boxes_fodcoco_sam3_named_norm.jsonl')
+JSONL_IN = Path('/mnt/sda1/datasets/drone/SkyFind/cod_uni_boxes_fodcoco_sam3_named_norm.jsonl')   # 框/概念来源（也是全量 todo 来源）
 JSONL_OUT = Path('/mnt/sda1/datasets/drone/SkyFind/cod_uni_boxes_fodcoco_sam3_named_norm_recover.jsonl')
 SCORE_THRE = 0.5     # 概念实例分数阈值
 NMS_THRE = 0.5       # 跨 tile/概念候选 NMS
 DEDUP_THRE = 0.3     # 与已有框去重阈值（收紧到 0.3：轻微错位的重复检出也剔掉）
 TILE = 1008          # SAM3 原生分辨率（processor target_size），超过才切 tile
 BATCH = 16            # 每次 forward 的 (概念×tile) 对数，15.5G 卡 32 会 OOM
-SHARD = 0            # 双卡分片：卡 0 跑 SHARD=0，卡 1 跑 SHARD=1，N_SHARDS=2
-N_SHARDS = 2
+GPUS = [0, 1, 2, 3]         # 用哪几张卡：主进程给列表里每张卡起一个子进程，空闲就改这里
 
 
 def tile_starts(edge):
@@ -157,13 +155,10 @@ def test_one(file='000811.jpg', concepts=None):
     vis(img, entry['xyxy'], new_boxes, file)
 
 
-def main():
-    # 每图概念（该图已有框的 label 集合）+ 已有框 + 断点，一次扫描
+def main(files, gpu):
+    """子进程：跑分片给定的图列表（主进程已按 done 过滤，分片互斥）"""
+    # 每图概念（该图已有框的 label 集合）+ 已有框，一次扫描
     exist = {}
-    done = set()
-    if JSONL_OUT.exists():
-        for line in open(JSONL_OUT):
-            done.add(json.loads(line)['file'])
     for line in open(JSONL_IN):
         r = json.loads(line)
         x1, y1, w, h = r['box'][:4]
@@ -172,13 +167,10 @@ def main():
         e['max_i'] = max(e['max_i'], r['i'])
         e['labels'].add(r['label'])
 
-    todo = [f for f in sorted(exist) if f not in done][SHARD::N_SHARDS]  # 双卡分片，断点按图互斥
-    print(f'图 {len(exist)} 张（已完成 {len(done)}），本次 {len(todo)} 张'
-          f'（shard {SHARD}/{N_SHARDS}），输出 {JSONL_OUT}', flush=True)
-
+    print(f'GPU {gpu}: 本次 {len(files)} 张，输出 {JSONL_OUT}', flush=True)
     proc = Sam3Processor.from_pretrained(CKPT)
     model = Sam3Model.from_pretrained(CKPT).cuda().eval()
-    with open(JSONL_OUT, 'a') as fout, tqdm(todo, desc='sam3 recover', unit='img') as pbar:
+    with open(JSONL_OUT, 'a') as fout, tqdm(files, desc=f'gpu{gpu}', unit='img') as pbar:
         for name in pbar:
             img = Image.open(ROOT / name).convert('RGB')
             new_boxes = recover_image(proc, model, exist[name], img)
@@ -191,4 +183,27 @@ def main():
 
 if __name__ == '__main__':
     # test_one('000811.jpg')
-    main()
+    if len(sys.argv) == 3:      # 子进程: sam3_recover.py <gpu> <分片列表文件>
+        main(open(sys.argv[2]).read().split(), int(sys.argv[1]))
+    else:                       # 主进程: 扫描全量图 → 滤已跑 → 分片 → 每卡起一个子进程
+        done = set()
+        if JSONL_OUT.exists():
+            for line in open(JSONL_OUT):
+                done.add(json.loads(line)['file'])
+        files = set()
+        for line in open(JSONL_IN):
+            files.add(json.loads(line)['file'])
+        todo = sorted(files - done)
+        print(f'图 {len(files)} 张（输出已有 {len(done)}），本次 {len(todo)} 张，'
+              f'{len(GPUS)} 卡并行: {GPUS}', flush=True)
+        procs = []
+        for k, g in enumerate(GPUS):
+            lst = f'/tmp/sam3_recover_gpu{g}.txt'
+            open(lst, 'w').write('\n'.join(todo[k::len(GPUS)]))
+            procs.append(subprocess.Popen([sys.executable, __file__, str(g), lst],
+                                          env=dict(os.environ, CUDA_VISIBLE_DEVICES=str(g))))
+        for p in procs:
+            p.wait()
+        bad = [(p.args[2], p.returncode) for p in procs if p.returncode]
+        print(f'子进程退出码: {[p.returncode for p in procs]}'
+              + (f'，异常: {bad}' if bad else '，全部正常'), flush=True)

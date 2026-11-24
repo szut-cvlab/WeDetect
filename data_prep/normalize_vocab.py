@@ -24,7 +24,11 @@ JUNK = {'arm', 'leg', 'hand', 'head', 'window', 'wall', 'door', 'wood', 'log', '
         'roof', 'brick', 'stack', 'manhole', 'manhole cover', 'antenna', 'flagpole',
         'canopy', 'awning', 'palm', 'shrub', 'structure', 'other', 'unicorn', 'galaxy',
         'bicycle seat', 'equipment box', 'cargo container', 'ac unit', 'float',
-        'fence', 'barrier', 'light pole'}
+        'fence', 'barrier', 'light pole',
+        # 建筑家族整体剔除（2026-11-23）：俯拍下 house/building 等类间边界无判据、标注覆盖任意、
+        # SAM3 recover 对 house 粒度漂移（单栋/整排混框），作为背景 stuff 处理
+        'house', 'building', 'apartment', 'shed', 'warehouse',
+        'cabin', 'hut', 'church', 'tower', 'factory'}
 
 # mid 层同义词/拼写修复（只列需要改的）
 RENAME_MID = {

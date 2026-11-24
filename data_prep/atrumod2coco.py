@@ -12,7 +12,7 @@
 
 类别（11 类车辆）
     源里是小写下划线写法，按池内规则处理：freight_car→freight car、tank_truck→tank truck（分隔符归一）；
-    motorcycle→motor（与 VisDrone/CODrone 同概念，合并到多数派）；suv→SUV（缩写写法）。
+    motorcycle→motorcycle（统一词表标准名，见 notes/2026-11-07 §2.3）；suv→SUV（缩写写法）。
     其余原样：car van bus truck trailer excavator crane。
 
 OBB -> 水平框
@@ -42,14 +42,16 @@ ROOT = "/mnt/sda1/datasets/drone/ATR-UMOD"
 DRONE_ROOT = "/mnt/sda1/datasets/drone"
 OUT_DIR = f"{DRONE_ROOT}/coco"
 SPLITS = ["train", "test"]
+# 统一词表 id（COD+FOD 合并词表，见 notes/2026-11-07 §2.3）
+VOCAB = json.load(open(f"{OUT_DIR}/vocab_merged.json"))
+NAME2UID = {n: i for i, n in enumerate(VOCAB)}
 CLASSES = ["car", "SUV", "van", "bus", "freight car", "truck",
-           "motor", "tank truck", "trailer", "excavator", "crane"]
-NAME2ID = {n: i for i, n in enumerate(CLASSES)}
+           "motorcycle", "tank truck", "trailer", "excavator", "crane"]
+NAME2ID = {n: NAME2UID[n] for n in CLASSES}
 # 分隔符归一：freight_car→freight car、tank_truck→tank truck
-# 同概念合并：motorcycle→motor（VisDrone/CODrone 都叫 motor，多数派）
-# 大小写：suv→SUV（缩写，论文写法；与 suv 的 embedding 余弦 0.987，无实质差异）
+# 标准名：motorcycle（统一词表）、SUV（缩写）
 RAW2NAME = {"freight_car": "freight car", "tank_truck": "tank truck",
-            "motorcycle": "motor", "suv": "SUV"}
+            "motorcycle": "motorcycle", "suv": "SUV"}
 
 images, anns = [], []
 stat = Counter()
@@ -107,8 +109,8 @@ for sp in SPLITS:
 
 os.makedirs(OUT_DIR, exist_ok=True)
 json.dump({"images": images, "annotations": anns,
-           "categories": [{"id": i, "name": n, "supercategory": ""}
-                          for i, n in enumerate(CLASSES)]},
+           "categories": [{"id": NAME2ID[n], "name": n, "supercategory": ""}
+                          for n in CLASSES]},
           open(f"{OUT_DIR}/atrumod.json", "w"))
 json.dump([[n] for n in CLASSES], open(f"{OUT_DIR}/atrumod_class_texts.json", "w"),
           ensure_ascii=False)
@@ -117,8 +119,8 @@ print(f"images={len(images)} boxes={len(anns)}")
 for k, v in sorted(stat.items()):
     print(f"  {k:12} {v}")
 cnt = Counter(a["category_id"] for a in anns)
-for i, n in enumerate(CLASSES):
-    print(f"  {n:12} {cnt[i]}")
+for n in CLASSES:
+    print(f"  {n:12} {cnt[NAME2ID[n]]}")
 for lo, hi in [(0, 8), (8, 16), (16, 32), (32, 64), (64, 10 ** 9)]:
     c = sum(1 for s in sides if lo <= s < hi)
     print(f"  edge [{lo},{hi}) = {c} ({c/len(sides)*100:.1f}%)")
