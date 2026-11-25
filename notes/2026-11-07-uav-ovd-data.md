@@ -59,7 +59,7 @@ BaiduPCS-Go config set -max_parallel 20
 BaiduPCS-Go download /apps/bypy/train.zip -save /mnt/sda1/datasets/drone -p 20
 ```
 
-## 2. 数据统计
+## 2. 训练集准备
 
 ### 2.1 FOD 训练集
 
@@ -402,3 +402,128 @@ CUDA_VISIBLE_DEVICES=3 SHARD=1 NUM_SHARDS=2 .venv-sam3/bin/python data_prep/sam3
 | 边长 | <8px | 8–16 | 16–32 | 32–64 | ≥64 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 占比 | 3.7% | 15.1% | 33.4% | 30.4% | 17.3% |
+
+## 3. 评测集准备
+
+### 3.1 VisDrone test-dev
+
+1,610 图 / 75,102 框 / 10 类，`data/coco_anno/visdrone_testdev.json`（统一词表 id；类 0 进 `ignore_regions`、类 11 进 `others_regions`），脚本 `data_prep/visdrone2coco.py --split testdev`。
+
+| 项目 | 数值 |
+| --- | ---: |
+| 图 / 框 | 1,610 / 75,102 |
+| 逐类 | car 28,074、pedestrian 21,006、people 6,376、motorcycle 5,845、van 5,771、bus 2,940、truck 2,659、bicycle 1,302、awning tricycle 599、tricycle 530 |
+
+口径：GT 不穷尽，检出未标注的真实目标计误报（零样本摸底 AP 9.6 偏低的原因之一）。
+
+### 3.2 SeaDronesSee + MOBDrone（海洋卷）
+
+
+
+## 4. 海洋二集准备
+
+结论：MOBDrone / SeaDronesSee 的 train 全量转 COCO 入 FOD；标签映射进统一词表，恢复 `lifebuoy`。
+
+### 4.1 MOBDrone
+
+原始：66 段视频，1920×1012、29.97fps，逐帧抽出 126,170 图，帧号 = 视频解码序号。
+
+标注：`annotations_5_custom_classes.json`（5 类 person/boat/surfboard/wood/life_buoy，181,689 框）用这份；`annotations_3_coco_classes.json` 不用。
+
+```bash
+mkdir -p /mnt/sda1/datasets/drone/MOBDrone && cd /mnt/sda1/datasets/drone/MOBDrone
+wget -c "https://zenodo.org/records/5996890/files/annotations_5_custom_classes.json?download=1" -O annotations_5_custom_classes.json
+wget -c "https://zenodo.org/records/5996890/files/MOBDrone_videos.zip?download=1" -O MOBDrone_videos.zip
+```
+
+#### 4.1.1 抽帧口径
+
+两处特例：`DJI_0915_0007_40.mp4` 对应标注流 `DJI_0915_0007_40m`；`DJI_0804_0017_40m` 视频 1,593 帧 > 标注 1,589 帧，尾部 4 帧不评测。
+
+官方逐帧全抽、冗余极高（相邻帧只有 4–6% 新框），按 `idx % 10 == 0` 抽帧，无框帧不入。
+
+| k=10 | 图 | 框 |
+| --- | ---: | ---: |
+| test | 2,398 | 8,983 |
+| train | 6,730 | 9,221 |
+| 合计 | 9,128 | 18,204 |
+
+逐类 test person 4,630 / boat 2,151 / life_buoy 1,044 / wood 963 / surfboard 195，train person 6,720 / boat 1,860 / wood 641。词表 174 → 176：恢复 `lifebuoy`，新增 `driftwood`（原 `wood` 海面漂浮木）。
+
+高度分布（官方全帧）：
+
+| 高度 | train 帧 | train 框 | test 帧 | test 框 |
+| --- | ---: | ---: | ---: | ---: |
+| 10m | — | — | 958 | 151 |
+| 20m | 5,114 | 3,157 | 4,939 | 6,116 |
+| 30m | 16,223 | 13,117 | 13,181 | 18,995 |
+| 40m | 24,857 | 24,843 | 8,189 | 16,676 |
+| 50m | 20,514 | 24,812 | 8,669 | 42,572 |
+| 60m | 21,858 | 26,148 | 1,668 | 5,102 |
+| **总计** | **88,566** | **92,077** | **37,604** | **89,612** |
+
+#### 4.1.2 抽帧、打包与传回
+
+本机两份清单 `keep_frames.txt`（真实帧号）与 `keep_seq.txt`（抽帧顺序号）各 9,128 行，打包只传后者。服务器抽帧文件名 `frames/<流名>_%06d.jpg` 为顺序号；本机解压后按 `真实帧号 = 顺序号 × 10` 重命名为 `<流名>_%06d.PNG`（特例流 `40` → `40m`），与标注 `file_name` 完全一致：9,128 张全部命中、零空标注。
+
+服务器抽帧：
+
+```bash
+cd ~/video_split_fullhd && mkdir -p frames
+i=0; tot=$(ls DJI_*.mp4 | wc -l)
+for v in DJI_*.mp4; do
+  s=${v%.mp4}; i=$((i+1))
+  [ -e "frames/${s}_000000.jpg" ] && continue
+  ffmpeg -y -loglevel error -i "$v" -vf "select='eq(mod(n,10),0)'" -vsync 0 -start_number 0 -q:v 2 "frames/${s}_%06d.jpg"
+done
+ls frames | wc -l                 # 12,643
+```
+
+打包并经 GitHub 中转传回。本机传清单：
+
+```bash
+scp /mnt/sda1/datasets/drone/MOBDrone/keep_seq.txt g9918265@35.208.194.214:~/video_split_fullhd/
+```
+
+服务器打包（实测 1.9 GB）：
+
+```bash
+cd ~/video_split_fullhd && tar cf frames.tar -C frames -T keep_seq.txt
+tar tf frames.tar | wc -l        # 9128
+```
+
+服务器 gh 交互式传 Release（先 `gh auth login`）：
+
+```bash
+REPO=hougeai/mobdrone-frames
+cd ~/video_split_fullhd
+gh release create mobdrone-frames frames.tar --repo $REPO --title "MOBDrone frames"
+```
+
+本机拉回：
+
+```bash
+cd /mnt/sda1/datasets/drone/MOBDrone
+wget -c "https://ghfast.top/https://github.com/$REPO/releases/download/mobdrone-frames/frames.tar"
+tar tf frames.tar | wc -l        # 9128
+tar xf frames.tar -C frames
+```
+
+### 4.2 SeaDronesSee
+
+图片：S-ODv2，14,227 图 = 8,930 train + 1,547 val + 3,750 test；是独立图像集不是视频抽帧
+标注：6 类 swimmer/boat/jetski/life_saving_appliances/buoy/ignored；CC0 1.0）
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_HUB_DISABLE_XET=1
+hf download --repo-type dataset dronefreak/SeaDronesSee --local-dir /mnt/sda1/datasets/drone/SeaDronesSee --max-workers 1
+```
+
+| split | 图片 | 框 |
+|---|---:|---:|
+| train | 8,930 | 57,760 |
+| val | 1,547 | 9,630 |
+| 合计 | 10,477 | 67,390 |
+
+标注在 `data/images/{train,val}/shard_*/metadata.jsonl`，与 jpg 一一对应、无空标注。
