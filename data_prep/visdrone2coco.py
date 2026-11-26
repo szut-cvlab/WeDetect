@@ -9,7 +9,10 @@
       VisDrone/VisDrone2019-DET-{train,val,test-dev}/annotations/*.txt
       每行 8 字段：left,top,w,h,score,category,truncate,occlusion
 输出  coco/visdrone_trainval.json / coco/visdrone_testdev.json
-      类 1-10 写进 annotations，0 进 ignore_regions，11 进 others_regions
+      类 1-10 写进 annotations，0 进 ignore_regions，11 进 others_regions（只留档，不进 GT）
+      ignore 的 don't-care 由评测逻辑处理（自定义 eval：未匹配 GT 且落在 ignore 区域的检出不计 FP，
+      VisDrone 官方 devkit 语义），不在 json 里做 crowd 化——全类复制 crowd ann 会让
+      per-category 统计失真，训练侧误用还会变错误正样本。
       file_name 相对 /mnt/sda1/datasets/drone，全池共用 data_root
       class_texts 只在 trainval 时写，testdev 共用同一份
 """
@@ -104,9 +107,9 @@ for k, v in sorted(stat.items()):
 cnt = Counter(a["category_id"] for a in anns)
 for n in CLASSES:
     print(f"  {n:16s} {cnt[NAME2UID[n]]}")
-print("  truncate", Counter(a["truncate"] for a in anns))
-print("  occlusion", Counter(a["occlusion"] for a in anns))
-side = [min(a["bbox"][2], a["bbox"][3]) for a in anns]
+print("  truncate", Counter(a["truncate"] for a in anns if "truncate" in a))
+print("  occlusion", Counter(a["occlusion"] for a in anns if "occlusion" in a))
+side = [min(a["bbox"][2], a["bbox"][3]) for a in anns if "truncate" in a]
 for lo, hi in [(0, 8), (8, 16), (16, 32), (32, 64), (64, 10 ** 9)]:
     print(f"  edge [{lo},{hi}) = {sum(1 for s in side if lo <= s < hi)}")
 missing = [im["file_name"] for im in images

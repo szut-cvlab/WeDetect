@@ -7,7 +7,8 @@ SKYFIND = "/mnt/sda1/datasets/drone/SkyFind"
 COD_RENAME = {"suv": "SUV", "tanker truck": "tank truck"}
 FOD_RENAME = {"motor": "motorcycle"}
 COD_CLASSES_FILE = f"{SKYFIND}/cod_uni_boxes_fodcoco_sam3_named_norm_all_classes.jsonl"
-FOD_FILES = ["visdrone_trainval", "codrone", "dronevehicle", "hazydet", "atrumod"]
+FOD_FILES = ["visdrone_trainval", "codrone", "dronevehicle", "hazydet", "atrumod",
+             "mobdrone_train", "seadronessee"]
 
 # 尾类归并表：drop 剔除，merge 并入上位类（1-4 框的类，见 notes/2026-11-07 §2.3）
 TAIL = json.load(open(f"{COCO_DIR}/vocab_tail_map.json"))

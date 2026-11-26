@@ -65,7 +65,7 @@ BaiduPCS-Go download /apps/bypy/train.zip -save /mnt/sda1/datasets/drone -p 20
 
 #### 2.1.0 总览
 
-入池五集的来源：
+入池七集的来源：
 
 | 数据集 | 地址 |
 | --- | --- |
@@ -74,8 +74,10 @@ BaiduPCS-Go download /apps/bypy/train.zip -save /mnt/sda1/datasets/drone -p 20
 | HazyDet | https://github.com/GrokCV/HazyDet |
 | CODrone | https://github.com/AHideoKuzeA/CODrone-A-Comprehensive-Oriented-Object-Detection-benchmark-for-UAV ，镜像 https://hf-mirror.com/datasets/huseyincavus/codrone （`codrone.zip` 7.25 GB） |
 | ATR-UMOD | https://github.com/supercpy/ATR-UMOD （README 给百度网盘链接与提取码） |
+| MOBDrone | https://zenodo.org/records/5996890 |
+| SeaDronesSee | https://hf-mirror.com/datasets/dronefreak/SeaDronesSee |
 
-入池五个数据集的产物全在 `data/coco_anno/`（软链到 `/mnt/sda1/datasets/drone/coco`），`data_root=/mnt/sda1/datasets/drone`：
+入池七个数据集的产物全在 `data/coco_anno/`（软链到 `/mnt/sda1/datasets/drone/coco`），`data_root=/mnt/sda1/datasets/drone`：
 
 | 数据集 | 入池 json | 类数 | 图 / 框 | 转换脚本 |
 | --- | --- | --- | --- | --- |
@@ -84,13 +86,15 @@ BaiduPCS-Go download /apps/bypy/train.zip -save /mnt/sda1/datasets/drone -p 20
 | HazyDet | `hazydet.json` | 3 | 11,543 / 380,128 | `hazydet2coco.py` |
 | CODrone | `codrone.json` | 12 | 10,004 / 443,583 | `codrone2coco.py` |
 | ATR-UMOD | `atrumod.json` | 11 | 13,245 / 161,787 | `atrumod2coco.py` |
-| **合计** | 5 份 | 21 | **69,465 / 1,820,029** | — |
+| MOBDrone | `mobdrone_train.json` | 5 | 6,730 / 9,221 | `mobdrone2coco.py --split train` |
+| SeaDronesSee | `seadronessee.json` | 5 | 10,477 / 67,390 | `seadronessee2coco.py` |
+| **合计** | 7 份 | 29 | **86,672 / 1,896,640** | — |
 
-**1,820,029 是训练实例数**（五集 annotations 总数，dataloader 真正看到的条数），对外发布与命名都用它。全图入池，切块只在方法侧训练与推理时按需做，tile 不落盘。类数相加 41、去重后 21。
+**1,896,640 是训练实例数**（七集 annotations 总数，dataloader 真正看到的条数），对外发布与命名都用它。全图入池，切块只在方法侧训练与推理时按需做，tile 不落盘。类数相加 51、去重后 29。
 
 命名：`{dataset}.json` 是入池标注，`{dataset}_class_texts.json` 是类名表。
 
-**Uni objectness 微调按边切 1280**：任一边 >1600 的图切块（切边恒 1280 规则在 `slice_coco.py`，`python3 data_prep/slice_coco.py --ann <ds>.json --dataset <DATASET>`）；mosaic 会把 >1280 子图缩到 1280，切块避免丢小目标。
+**Uni objectness 微调按边切 1280**（该实验时 FOD 为 5 集口径，海洋二集后扩为 7 集）：任一边 >1600 的图切块（切边恒 1280 规则在 `slice_coco.py`，`python3 data_prep/slice_coco.py --ann <ds>.json --dataset <DATASET>`）；mosaic 会把 >1280 子图缩到 1280，切块避免丢小目标。
 
 | 数据集 | 微调用 json | 图 / 框 | 处置 |
 | --- | --- | --- | --- |
@@ -114,7 +118,7 @@ BaiduPCS-Go download /apps/bypy/train.zip -save /mnt/sda1/datasets/drone -p 20
 | `motor` | `motorcycle` | CODrone 原始名；ATR 原始名本就是 motorcycle、不改。标准名见 §2.3 |
 | `suv` | `SUV` | ATR-UMOD，缩写按论文写法；两种写法 embedding 余弦 0.980，无精度差 |
 
-合并后 21 词，无连字符与下划线残留。源内划分 `pedestrian` / `people`（VisDrone）、`boat` / `ship`（CODrone，7,143 / 434 框）在 §2.3 统一词表里都保留为独立类。写法差异的 embedding 距离用 `data_prep/check_class_tokenizer.py` 实测。
+合并后 29 词，无连字符与下划线残留。源内划分 `pedestrian` / `people`（VisDrone）、`boat` / `ship`（CODrone，7,143 / 434 框）在 §2.3 统一词表里都保留为独立类。写法差异的 embedding 距离用 `data_prep/check_class_tokenizer.py` 实测。
 
 | 原始形态 | 数据集 | 转换 |
 | --- | --- | --- |
@@ -200,14 +204,14 @@ datasetninja 重打包版，RGB 与红外成对，只用 RGB 半边。XML 标注
 
 #### 2.2.0 图源与管线
 
-COD 图源只有一批：**SkyFind 剔四域 + 同帧去重 + VLM 航拍过滤后的 14,716 张**，清单 `SkyFind/cod_filtered.json`（`{root, images, stats, 阈值}`），下游只读它。FOD 五集 1.82M 框不动。按源统计、划分实测、下载解压与去重细节见 [2026-11-08-uav-skyfind.md](2026-11-08-uav-skyfind.md)；自爬采集脚本 `pexels.py` / `bilibili.py` / `video_frames.py`。
+COD 图源只有一批：**SkyFind 剔四域 + 同帧去重 + VLM 航拍过滤后的 14,716 张**，清单 `SkyFind/cod_filtered.json`（`{root, images, stats, 阈值}`），下游只读它。FOD 七集 1.89M 框不动。按源统计、划分实测、下载解压与去重细节见 [2026-11-08-uav-skyfind.md](2026-11-08-uav-skyfind.md)；自爬采集脚本 `pexels.py` / `bilibili.py` / `video_frames.py`。
 
 | | 图数 | 说明 |
 | --- | ---: | --- |
 | SkyFind 全量 | 35,599 | 解压到 `SkyFind/train/` + `SkyFind/test/` |
 | − VisDrone | 4,688 | FOD 重复 + 可能含 test-dev 帧，考卷一泄漏险 |
 | − DroneVehicle | 4,829 | FOD 重复 |
-| − SeaDronesSee / MOBDrone | 4,736 | 考卷二整集留出，已移到 `SkyFind/test/` |
+| − SeaDronesSee / MOBDrone | 4,736 | 与 FOD 海洋二集同源（官方 train 已直接入 FOD），避免跨池重复；帧已移到 `SkyFind/test/`，不入 COD。考卷二用官方集 MOBDrone test，与 SkyFind 无关 |
 | 剩 | 21,346 | 自爬 8,216 + UVSD 3,950 + AU-AIR 2,280 + UAVDT 1,934 + Okutama 1,521 + CARPK 1,221 + Stanford 1,170 + 分割四域 1,054 |
 | − 同帧去重 | −5,914 | dHash 汉明 ≤6，按源内部、簇内取最清晰那张（`data_prep/skyfind_dedup.py`） |
 | − VLM 航拍过滤 | −716 | 自爬地拍 714 + 坏图 2（`data_prep/crawl_vlm_filter.py`，DeepSeek-V4.1-Flash 判视角，20 张人工锚点对拍全一致，16 张抽查 0 污染；逐图标注 `SkyFind/crawl_labels.json`） |
@@ -234,7 +238,7 @@ CUDA_VISIBLE_DEVICES=2 SHARD=0 .venv/bin/python data_prep/cod_uni_recall.py
 CUDA_VISIBLE_DEVICES=3 SHARD=1 .venv/bin/python data_prep/cod_uni_recall.py
 ```
 
-**第一步：纯 FOD 微调**
+**第一步：纯 FOD 微调**（该实验时 FOD 为 5 集口径）
 
 - 微调前（`cod_uni_boxes.jsonl`）：153 万框 17.2% 大框（>512px），分数与正常框重合（0.23 vs 0.25）阈值杀不掉——Uni 没见过航拍，实例粒度错乱
 - 修法：FOD 69,465 图 / 182 万框（类别并 0 当 objectness）解冻 head/neck 微调 Uni，配方 `wedetect_uni_large_finetune.py`（large + 1280）
@@ -324,9 +328,9 @@ CUDA_VISIBLE_DEVICES=3 SHARD=1 NUM_SHARDS=2 .venv-sam3/bin/python data_prep/sam3
 | mid | 316 | 230（剔 86 个 JUNK） | car 342,609 / pedestrian 56,271 / boat 27,795 / truck 19,984 |
 | fine | 437 | **288（管线类名，训练词表 174 见 §2.3）** | sedan 175,324 / car 130,394 / pedestrian 56,257 / suv 21,384 |
 
-清洗（`data_prep/normalize_vocab.py`，输入 `named.jsonl`）：同义词合并 + 拼写修复 + motor 按 coarse 分流（vehicle→motorcycle / boat→motorboat）+ JUNK 剔除。2026-11-23 建筑家族九词（house/building/apartment/shed/warehouse/cabin/hut/church/tower/factory）入 JUNK 整体剔除：俯拍下类间边界无判据、标注覆盖任意、SAM3 recover 对 house 粒度漂移，当背景 stuff。训练类名取 fine（脏则回退 mid）。
+清洗（`data_prep/normalize_vocab.py`，输入 `named.jsonl`）：同义词合并 + 拼写修复 + motor 按 coarse 分流（vehicle→motorcycle / boat→motorboat）+ JUNK 剔除。2026-11-23 建筑家族九词（house/building/apartment/shed/warehouse/cabin/hut/church/tower/factory）入 JUNK 整体剔除：俯拍下类间边界无判据、标注覆盖任意、SAM3 recover 对 house 粒度漂移，当背景 stuff。
 
-输出 `SkyFind/cod_uni_boxes_fodcoco_sam3_named_norm.jsonl`：499,506 框 / 288 类 / 零 reject 行（训练词表经 §2.3 尾类归并后 174 类）。头部陡：sedan+car+pedestrian 占 72.5%，尾类见 top40。
+输出 `SkyFind/cod_uni_boxes_fodcoco_sam3_named_norm.jsonl`：499,506 框 / 288 类 / 零 reject 行（经 §2.3 尾类归并落在统一词表 179 类内）。头部陡：sedan+car+pedestrian 占 72.5%，尾类见 top40。
 
 ##### 2.2.1.4 SAM3 概念补漏
 
@@ -347,7 +351,7 @@ CUDA_VISIBLE_DEVICES=3 SHARD=1 NUM_SHARDS=2 .venv-sam3/bin/python data_prep/sam3
 
 输入 `named_norm.jsonl`（499,506）+ `recover.jsonl`（131,323），`data_prep/merge_boxes.py`：
 
-- 统一行 `{file, i, box, score, label}`，label = 训练类名 fine
+- 统一行 `{file, i, box, score, label}`
 - <4px 框 792 个：537 个能回溯到 ≥4px Uni 原框的救援回原框几何（recheck 紧框收缩误伤，label 仍是 VLM 验证过的）；Uni 原框也 <4px 的 149 个与 recover 自检的 106 个剔除
 - 输出 `..._all.jsonl` + `..._all_classes.jsonl`（288 类按名排序固定 id，仅 COD 内部排序用；训练共用 §2.3 的 `vocab_merged.json`）
 
@@ -364,22 +368,23 @@ CUDA_VISIBLE_DEVICES=3 SHARD=1 NUM_SHARDS=2 .venv-sam3/bin/python data_prep/sam3
 
 ### 2.3 COD + FOD 训练集
 
-统一词表 **174 类**（COD 288 + FOD 独有 4 类，其中 118 个 ≤4 框尾类归并或剔除），落盘 `data/coco_anno/vocab_merged.json`，归并表 `data/coco_anno/vocab_tail_map.json`。6 个单集 json 的 category_id 全部用统一 id，同名即同类。
+统一词表 **179 类**（COD 171 + FOD 29，交集 21 类），其中 117 个 ≤4 框尾类归并或剔除，落盘 `data/coco_anno/vocab_merged.json`（0-based，按名排序固定 id），归并表 `data/coco_anno/vocab_tail_map.json`。单集 json 的 category_id 是生成时的词表快照，**merge 时按类名重映射**（`merge_coco.py`），单集 json 不随词表重排重跑——单集独立使用只需 categories 顺序与其 class_texts 一致。
 
 | 处理 | 内容 |
 | --- | --- |
-| 同名直接合并（17 类） | car / truck / bus / van / bicycle / tricycle / boat / ship / pedestrian / motorcycle / SUV / crane / excavator / trailer / traffic sign / traffic light / tank truck |
-| 尾类归并（118 类） | 每个类在 ovd 里只有 1–4 框：75 类并入上位类（133 框，如 giraffe→animal、gondola→boat、military ship→ship），43 类丢弃（87 框，家居物件/误标/飞行器细分） |
+| 同名直接合并（21 类） | car / truck / bus / van / bicycle / tricycle / boat / ship / pedestrian / motorcycle / SUV / crane / excavator / trailer / traffic sign / traffic light / tank truck / person / swimmer / surfboard / lifebuoy |
+| 尾类归并（117 类） | 每个类在 ovd 里只有 1–4 框：75 类并入上位类（133 框，如 giraffe→animal、gondola→boat、military ship→ship），42 类丢弃（87 框，家居物件/误标/飞行器细分） |
 | COD 改名 2 处 | suv→SUV（21,666 框；另有 6 框尾类并入，SUV 合计 21,672）；tanker truck→tank truck（25 框） |
 | FOD 改名 1 处 | motor→motorcycle：在 `visdrone2coco.py` / `codrone2coco.py` / `atrumod2coco.py` 源头改掉（VisDrone 原生类别索引、CODrone 原始名 motor、ATR 原始名 motorcycle），bbox 坐标不动 |
-| 保持分离 | people（人群）≠ pedestrian（单人）；FOD freight car（货车）≠ COD train（铁道）；sign 与 traffic sign 分开 |
+| 海洋二集改名 3 处 | MOBDrone wood→driftwood、life_buoy→lifebuoy；SeaDronesSee life_saving_appliances→life saving appliances（类名禁下划线），bbox 坐标不动 |
+| 保持分离 | people（人群）≠ pedestrian（单人）；FOD freight car（货车）≠ COD train（铁道）；sign 与 traffic sign 分开；lifebuoy（救生圈）≠ life saving appliances（救生设备）≠ buoy（浮标） |
 
-1. `data_prep/build_unified_vocab.py`：读 SkyFind 288 类表 + FOD 5 json 的 categories + `vocab_tail_map.json`（人工审定的归并/剔除表，重跑只读），产出 `data/coco_anno/vocab_merged.json`（174 类）
-2. `data_prep/{visdrone,codrone,dronevehicle,hazydet,atrumod}2coco.py`：各自读 `vocab_merged.json`，categories 与框的 category_id 直接写统一 id（FOD 21 类无尾类，不经归并表），产出 5 个 json + `*_class_texts.json`（数量口径见 2.1）
-3. `data_prep/cod2coco.py`：输入 `vocab_merged.json` + `vocab_tail_map.json` + `SkyFind/cod_uni_boxes_fodcoco_sam3_named_norm_all.jsonl`（label 先查归并表再取 id）+ `cod_uni_boxes_fodcoco.jsonl`（宽高字典）；输出 `data/coco_anno/cod.json` + `cod_class_texts.json`（14,556 图 / 630,487 框 / 170 类，file_name `SkyFind/train/<file>`，160 张零框剔除）
-4. `data_prep/merge_coco.py`：拼训练入口，只留标准字段（image: id/file_name/width/height；ann: id/image_id/category_id/bbox/area/iscrowd），image_id/ann_id 重编；输出 `fod.json` + `fod_class_texts.json`（5 集 69,465 图 / 1,820,029 框 / 21 类）、`ovd.json` + `ovd_class_texts.json`（cod + fod 84,021 图 / 2,450,516 框 / 174 类）
+1. `data_prep/build_unified_vocab.py`：读 SkyFind 288 类表 + FOD 7 json 的 categories + `vocab_tail_map.json`（人工审定的归并/剔除表，重跑只读），产出 `data/coco_anno/vocab_merged.json`（179 类）
+2. `data_prep/{visdrone,codrone,dronevehicle,hazydet,atrumod,mobdrone,seadronessee}2coco.py`：各自读生成时的词表快照写统一 id（FOD 不经归并表），产出 7 个训练 json + `*_class_texts.json`；评测 json（`visdrone_testdev` / `mobdrone_test`）同脚本 `--split` 生成，同为统一词表 id、不经归并表（见 §3）
+3. `data_prep/cod2coco.py`：输入 `vocab_merged.json` + `vocab_tail_map.json` + `SkyFind/cod_uni_boxes_fodcoco_sam3_named_norm_all.jsonl`（label 先查归并表再取 id）+ `cod_uni_boxes_fodcoco.jsonl`（宽高字典）；输出 `cod.json` + `cod_class_texts.json`，file_name `SkyFind/train/<file>`，160 张零框剔除（lifebuoy 移出 drop 表后 COD 内 4 框回归）
+4. `data_prep/merge_coco.py`：拼训练入口，各集按类名重映射到当前统一 id，只留标准字段（image: id/file_name/width/height；ann: id/image_id/category_id/bbox/area/iscrowd），image_id/ann_id 重编；输出 `fod.json`（7 集合并）与 `ovd.json`（cod + fod），数量见下表
 
-按此顺序重跑，产物 md5 与当前一致（2026-11-24 实测）。
+各集 json（旧词表快照）与 merge 产物并存，重跑 merge 不需要重跑各集。
 
 训练按实验指定 `cod.json` / `fod.json` / `ovd.json` 三档入口；单集 json 保留附加字段（score/truncate/occlusion/ignore_regions）。
 
@@ -387,42 +392,47 @@ CUDA_VISIBLE_DEVICES=3 SHARD=1 NUM_SHARDS=2 .venv-sam3/bin/python data_prep/sam3
 
 | | 图 | 框 | 框/图 | 类 |
 | --- | ---: | ---: | ---: | ---: |
-| fod | 69,465 | 1,820,029 | 26.2 | 21 |
-| cod | 14,556 | 630,487 | 43.3 | 170 |
-| ovd | 84,021 | 2,450,516 | 29.2 | 174 |
+| fod | 86,672 | 1,896,640 | 21.9 | 29 |
+| cod | 14,556 | 630,491 | 43.3 | 171 |
+| ovd | 101,228 | 2,527,131 | 25.0 | 179 |
 | COCO train2017 | 118,287 | 860,001 | 7.3 | 80 |
 | LVIS v1 train | 100,170 | ~1.27M | 12.7 | 1,203 |
 
 - LVIS 图出自 COCO 2017 全集 164k，重切为 train 100,170 / val 19,809 / test 19,822
-- 图数 COCO 的 71%、框数 2.85 倍、密度 4 倍；类数 COCO 的 2.2 倍、LVIS 的 1/7
+- 图数 COCO 的 86%、框数 2.94 倍、密度 3.4 倍；类数 COCO 的 2.2 倍、LVIS 的 1/7
 - 短板在 COD 图量：14,556 张（COCO 的 1/8），仅一批 SkyFind 源
 - COD 头部陡：car+sedan+pedestrian 占 69.9%
-- ovd 目标边长 <32px 占 52.2%：
+- ovd 目标边长 <32px 占 52.0%：
 
 | 边长 | <8px | 8–16 | 16–32 | 32–64 | ≥64 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 占比 | 3.7% | 15.1% | 33.4% | 30.4% | 17.3% |
+| 占比 | 3.6% | 15.0% | 33.5% | 30.5% | 17.4% |
 
 ## 3. 评测集准备
 
 ### 3.1 VisDrone test-dev
 
-1,610 图 / 75,102 框 / 10 类，`data/coco_anno/visdrone_testdev.json`（统一词表 id；类 0 进 `ignore_regions`、类 11 进 `others_regions`），脚本 `data_prep/visdrone2coco.py --split testdev`。
+1,610 图 / 75,102 框 / 10 类，`data/coco_anno/visdrone_testdev.json`（统一词表 id），脚本 `data_prep/visdrone2coco.py --split testdev`。
 
-| 项目 | 数值 |
-| --- | ---: |
-| 图 / 框 | 1,610 / 75,102 |
-| 逐类 | car 28,074、pedestrian 21,006、people 6,376、motorcycle 5,845、van 5,771、bus 2,940、truck 2,659、bicycle 1,302、awning tricycle 599、tricycle 530 |
+| car | pedestrian | people | motorcycle | van | bus | truck | bicycle | awning tricycle | tricycle |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 28,074 | 21,006 | 6,376 | 5,845 | 5,771 | 2,940 | 2,659 | 1,302 | 599 | 530 |
 
-口径：GT 不穷尽，检出未标注的真实目标计误报（零样本摸底 AP 9.6 偏低的原因之一）。
+ignore 处理：类 0/11 区域只在 json 留档不进 GT；检出未匹配 GT 且落在 ignore 区域不计 FP（VisDrone 官方 devkit 语义）。标准 COCOeval 做不到，**评测逻辑和代码需重写，待实现**。
 
-### 3.2 SeaDronesSee + MOBDrone（海洋卷）
+### 3.2 MOBDrone test（海洋）
 
+2,398 图 / 8,983 框 / 5 类，`data/coco_anno/mobdrone_test.json`（class_texts 共用训练侧），脚本 `data_prep/mobdrone2coco.py --split test`。
 
+| person | boat | lifebuoy | driftwood | surfboard |
+| ---: | ---: | ---: | ---: | ---: |
+| 4,630 | 2,151 | 1,044 | 963 | 195 |
+
+口径：`surfboard` / `lifebuoy` train 段零样本，作 novel class 报。
 
 ## 4. 海洋二集准备
 
-结论：MOBDrone / SeaDronesSee 的 train 全量转 COCO 入 FOD；标签映射进统一词表，恢复 `lifebuoy`。
+结论：MOBDrone train / SeaDronesSee train+val 全量转 COCO 入 FOD；标签映射进统一词表，恢复 `lifebuoy`。
 
 ### 4.1 MOBDrone
 
@@ -448,7 +458,7 @@ wget -c "https://zenodo.org/records/5996890/files/MOBDrone_videos.zip?download=1
 | train | 6,730 | 9,221 |
 | 合计 | 9,128 | 18,204 |
 
-逐类 test person 4,630 / boat 2,151 / life_buoy 1,044 / wood 963 / surfboard 195，train person 6,720 / boat 1,860 / wood 641。词表 174 → 176：恢复 `lifebuoy`，新增 `driftwood`（原 `wood` 海面漂浮木）。
+逐类 test person 4,630 / boat 2,151 / life_buoy 1,044 / wood 963 / surfboard 195，train person 6,720 / boat 1,860 / wood 641。词表恢复 `lifebuoy`、新增 `driftwood`（原 `wood` 海面漂浮木）。
 
 高度分布（官方全帧）：
 
@@ -512,7 +522,7 @@ tar xf frames.tar -C frames
 ### 4.2 SeaDronesSee
 
 图片：S-ODv2，14,227 图 = 8,930 train + 1,547 val + 3,750 test；是独立图像集不是视频抽帧
-标注：6 类 swimmer/boat/jetski/life_saving_appliances/buoy/ignored；CC0 1.0）
+标注：6 类 swimmer/boat/jetski/life_saving_appliances/buoy/ignored；CC0 1.0
 
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
@@ -525,5 +535,7 @@ hf download --repo-type dataset dronefreak/SeaDronesSee --local-dir /mnt/sda1/da
 | train | 8,930 | 57,760 |
 | val | 1,547 | 9,630 |
 | 合计 | 10,477 | 67,390 |
+
+口径：train+val 全量单文件 `seadronessee.json` 入 FOD，不作评测；海洋评测集只留 MOBDrone test。
 
 标注在 `data/images/{train,val}/shard_*/metadata.jsonl`，与 jpg 一一对应、无空标注。
