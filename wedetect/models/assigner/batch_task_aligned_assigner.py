@@ -404,7 +404,12 @@ class BatchTaskAlignedAssigner(nn.Module):
                          self.eps).tile([1, 1, self.topk])
         topk_idxs = torch.where(topk_mask, topk_idxs,
                                 torch.zeros_like(topk_idxs))
-        is_in_topk = F.one_hot(topk_idxs, num_priors).sum(axis=-2)
+        # 等价于 F.one_hot(topk_idxs, num_priors).sum(-2)，但免掉
+        # [B, num_gt, topk, num_priors] int64 中间张量（1280 下 2.46GB 尖峰，bs2 会 OOM）
+        is_in_topk = torch.zeros(*topk_idxs.shape[:-1], num_priors,
+                                 dtype=torch.long,
+                                 device=topk_idxs.device).scatter_add_(
+                                     -1, topk_idxs, torch.ones_like(topk_idxs))
         is_in_topk = torch.where(is_in_topk > 1, torch.zeros_like(is_in_topk),
                                  is_in_topk)
         return is_in_topk.to(alignment_gt_metrics.dtype)

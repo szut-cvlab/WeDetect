@@ -39,16 +39,18 @@ src = json.load(open(f"{DRONE}/annotations_5_custom_classes.json"))
 keep = {im["id"] for im in src["images"] if im["file_name"] in files}
 
 images, anns = [], []
+old2new = {}  # 官方原始 image id -> 0-based 连续 id（merge 偏移依赖连续性）
 for im in src["images"]:
     if im["id"] in keep:
-        images.append({"id": im["id"], "file_name": f"MOBDrone/frames/{im['file_name']}",
+        old2new[im["id"]] = len(images)
+        images.append({"id": len(images), "file_name": f"MOBDrone/frames/{im['file_name']}",
                        "width": im["width"], "height": im["height"]})
 for a in src["annotations"]:
     name = RAW2NAME.get(raw_id2name[a["category_id"]])
     if a["image_id"] not in keep or name is None:
         continue
     x, y, w, h = a["bbox"]
-    anns.append({"id": len(anns) + 1, "image_id": a["image_id"],
+    anns.append({"id": len(anns) + 1, "image_id": old2new[a["image_id"]],
                  "category_id": cat_id[name], "bbox": [x, y, w, h],
                  "area": w * h, "iscrowd": 0})
 
